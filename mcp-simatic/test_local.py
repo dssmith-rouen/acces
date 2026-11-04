@@ -21,10 +21,11 @@ TIMEOUT = 300  # secondes par requête
 
 
 class Client:
-    def __init__(self):
+    def __init__(self, env=None):
         self.proc = subprocess.Popen(
             [sys.executable, os.path.join(HERE, "server.py")],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env,
         )
         self.lines = queue.Queue()
         threading.Thread(target=self._pump, daemon=True).start()
@@ -111,6 +112,74 @@ def _extrait_hw(result):
     return {"station": data[0]["station"], "nb_modules": len(data[0]["modules"]), "exemples_modules_es": mods}
 
 
+def experience_cfc(args):
+    import collections
+
+    out = open(args.sortie, "w", encoding="utf-8")
+
+    def section(title, payload):
+        text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False, indent=2)
+        out.write(f"\n===== {title} =====\n{text}\n")
+        out.flush()
+        print(f"- {title}")
+
+    env = dict(os.environ, SIMATIC_PROJETS_ECRITURE=args.projet_copie)
+    client = Client(env=env)
+    p, chart = args.projet_copie, args.diagramme
+    try:
+        client.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                      "clientInfo": {"name": "test_local", "version": "0"}})
+        client.notify("notifications/initialized")
+        for module in ("S7GenerateSourceFlags", "S7XRefXportColumns", "S7ObjectBaseType"):
+            section(f"constantes {module}",
+                    client.tool("decrire_interface_com", progid="Simatic.Simatic", filtre=module)[1])
+
+        # Statistiques des blocs (langage, famille, auteur) pour repérer le code généré par le CFC
+        err, blocks = client.tool("lister_elements", projet=p, conteneur="Blocks", max_resultats=10000)
+        if err:
+            section("lister_elements Blocks", blocks)
+            blocks = {"elements": []}
+        els = blocks["elements"]
+        stats = {}
+        for key in ("genre", "Language", "Family", "Creator"):
+            stats[key] = collections.Counter(str(e.get(key)) for e in els).most_common(30)
+        section(f"statistiques des {len(els)} blocs", stats)
+        examples = {}
+        for lang, _ in stats["Language"]:
+            examples[lang] = [{k: e.get(k) for k in ("Name", "SymbolicName", "Comment", "Family", "Creator", "Size")}
+                              for e in els if str(e.get("Language")) == lang][:6]
+        section("exemples de blocs par langage", examples)
+        related = [e for e in els if any(chart.lower() in str(e.get(k, "")).lower()
+                                         for k in ("Name", "SymbolicName", "Comment"))]
+        section(f"blocs dont le nom/symbole/commentaire contient '{chart}'", related[:30])
+
+        # Structure d'appel (lecture seule)
+        err, struct = client.tool("structure_programme", projet=p, max_caracteres=60000)
+        section("structure_programme (60000 premiers caractères)", struct)
+        if not err and isinstance(struct, dict):
+            lines = [l for l in struct.get("contenu", "").splitlines() if chart.lower() in l.lower()]
+            section(f"lignes de la structure contenant '{chart}'", "\n".join(lines[:80]))
+
+        # Génération de sources sur la COPIE
+        prog = els[0]["programme"] if els else None
+        candidates = [e["Name"] for e in related[:3]]
+        candidates += [e["Name"] for e in els if e.get("SymbolicName") == "VP_PID"][:1]
+        for name in candidates:
+            chemin = ["Programs", prog, "Next", "Blocks", "Next", name]
+            section(f"generer_source {name}", client.tool("generer_source", projet=p, chemin=chemin,
+                                                          max_caracteres=40000)[1])
+
+        section("structure du dossier projet (dossiers >= 1 Mo)",
+                client.tool("structure_dossier_projet", projet=p, profondeur=6, min_ko=1000)[1])
+    except Exception as exc:
+        section("ERREUR DU TEST", f"{type(exc).__name__} : {exc}")
+    finally:
+        client.close()
+        section("stderr du serveur (fin)", "\n".join(client.stderr[-40:]))
+        out.close()
+        print(f"\nRapport écrit dans : {args.sortie}")
+
+
 PROGIDS_A_DECRIRE = (
     "Simatic.Simatic", "CfcEditor", "CFC-Plan", "Sfc.Document", "SfcEditor", "CSfcServer",
     "S7jieaEx.Document", "S7JWZAPX.PCS7Wizard", "IS7hwcnfxAutomation", "S7hwcnfx.Document",
@@ -126,6 +195,12 @@ def main():
     parser.add_argument("--recherche", default="PID", help="Texte pour l'outil rechercher.")
     parser.add_argument("--complet", action="store_true",
                         help="Ajoute la config matérielle complète, le réseau du multiprojet et les API COM.")
+    parser.add_argument("--experience-cfc", action="store_true",
+                        help="Expérience sur la COPIE du projet : structure d'appel, blocs liés à un "
+                             "diagramme, génération de sources (peut modifier la copie).")
+    parser.add_argument("--projet-copie",
+                        default=r"C:\Program Files (x86)\SIEMENS\STEP7\s7proj\Pr948v_1\Uc1")
+    parser.add_argument("--diagramme", default="71_0011_HIC")
     parser.add_argument("--sortie", default=os.path.join(HERE, "rapport_test.txt"))
     parser.add_argument("--sortie-com", default=os.path.join(HERE, "rapport_interfaces_com.txt"))
     args = parser.parse_args()
@@ -138,6 +213,9 @@ def main():
         f.write(f"\n===== {title} =====\n{text}\n")
         f.flush()
         print(f"- {title}")
+
+    if args.experience_cfc:
+        return experience_cfc(args)
 
     client = Client()
     try:

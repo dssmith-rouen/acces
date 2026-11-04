@@ -3,7 +3,7 @@
 Serveur MCP qui permet à Claude de lire les projets STEP 7 V5 via l'interface COM
 officielle de SIMATIC Manager (`Simatic.Simatic`).
 
-**Version 0.3 : lecture seule, hors ligne.** Le serveur lit uniquement les fichiers
+**Version 0.4 : lecture seule, hors ligne** (sauf l'outil expérimental `generer_source`, voir plus bas). Le serveur lit uniquement les fichiers
 projet. Il ne communique pas avec les automates et ne modifie rien : pas de
 compilation, pas de chargement, pas d'import. Seule la méthode `Export` est
 autorisée, et elle écrit un fichier texte en dehors du projet. Les propriétés COM
@@ -69,12 +69,27 @@ Le chemin de `python.exe` est celui affiché par `py -0p` pour la version `3.12-
 | `lister_elements` | Diagrammes CFC/SFC (boucles), blocs ou sources d'un programme, avec commentaire et filtre |
 | `mnemoniques` | Table des mnémoniques (symbole, adresse, type, commentaire) avec filtre |
 | `structure_dossier_projet` | Dossiers et types de fichiers du projet sur le disque |
+| `structure_programme` | Structure d'appel du programme (OB → FC/FB → DB d'instance) |
+| `generer_source` | EXPÉRIMENTAL : source AWL d'un bloc, seulement sur les projets autorisés (voir ci-dessous) |
 | `rechercher` | Recherche un texte dans les noms, noms symboliques et commentaires des blocs, sources et diagrammes |
 | `decrire_interface_com` | Décrit l'API d'un composant COM (ProgID) sans créer d'objet |
 
 Un projet se désigne par son **chemin** (LogPath), car des noms comme `UC1` existent
 en double. La navigation est une liste d'étapes, par exemple :
 `["Programs", "<programme>", "Next", "<conteneur>", "Next", "FB1"]`.
+
+## Outil expérimental `generer_source`
+
+`GenerateSource` peut créer un objet source dans le projet. Le serveur le refuse
+sauf sur les projets listés dans la variable d'environnement
+`SIMATIC_PROJETS_ECRITURE` (chemins séparés par `;`), par exemple une **copie** du
+projet. Les sources créées sont supprimées ensuite (`nettoyer=true` par défaut).
+
+Expérience sur la copie (structure d'appel, blocs liés à un diagramme, sources) :
+
+```powershell
+py -3.12-32 test_local.py --experience-cfc --diagramme 71_0011_HIC
+```
 
 ## Feuille de route
 

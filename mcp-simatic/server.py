@@ -21,7 +21,7 @@ except Exception:
 
 import simatic_com as s7  # noqa: E402
 
-SERVER_INFO = {"name": "simatic-step7", "version": "0.3.0"}
+SERVER_INFO = {"name": "simatic-step7", "version": "0.4.0"}
 SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
 _PROJET = {
@@ -193,10 +193,48 @@ TOOLS = [
             "properties": {
                 "projet": _PROJET,
                 "profondeur": {"type": "integer", "description": "Profondeur des dossiers listés (défaut 2)."},
+                "min_ko": {"type": "integer", "description": "Ne lister que les dossiers d'au moins cette taille (Ko)."},
             },
             "required": ["projet"],
         },
         "handler": s7.project_files,
+    },
+    {
+        "name": "structure_programme",
+        "description": "Exporte la structure d'appel du programme CPU (quel OB appelle quels "
+                       "FC/FB avec quels DB d'instance) dans un fichier texte et renvoie son "
+                       "contenu. Lecture seule.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projet": _PROJET,
+                "programme": {"type": "string", "description": "LogPath du programme (défaut : programme CPU)."},
+                "colonnes": {"type": "integer", "description": "Masque des colonnes (défaut : toutes)."},
+                "appels_multiples": {"type": "boolean", "description": "Répéter les appels multiples (défaut : non)."},
+                "max_caracteres": {"type": "integer", "description": "Défaut 150000."},
+            },
+            "required": ["projet"],
+        },
+        "handler": s7.program_structure,
+    },
+    {
+        "name": "generer_source",
+        "description": "EXPÉRIMENTAL. Génère la source AWL d'un bloc (ou d'un conteneur) pour en "
+                       "lire le code. Peut créer un objet source dans le projet (supprimé ensuite "
+                       "si nettoyer=true) : autorisé uniquement sur les projets listés dans la "
+                       "variable d'environnement SIMATIC_PROJETS_ECRITURE.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projet": _PROJET,
+                "chemin": _CHEMIN,
+                "flags": {"type": "integer", "description": "Options GenerateSource (défaut 0)."},
+                "nettoyer": {"type": "boolean", "description": "Supprimer les sources créées dans le projet (défaut : oui)."},
+                "max_caracteres": {"type": "integer", "description": "Défaut 150000."},
+            },
+            "required": ["projet", "chemin"],
+        },
+        "handler": s7.generate_source,
     },
     {
         "name": "decrire_interface_com",

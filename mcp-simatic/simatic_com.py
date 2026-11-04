@@ -640,7 +640,7 @@ def describe_typelib(progid, filtre=None):
         entry = {"nom": name, "genre": _TKIND.get(attr.typekind, attr.typekind)}
         if doc:
             entry["doc"] = doc
-        if attr.typekind == 0:  # enum : valeurs
+        if attr.typekind in (0, 2) and attr.cVars:  # enum / module : valeurs des constantes
             entry["valeurs"] = {ti.GetNames(ti.GetVarDesc(j).memid)[0]: ti.GetVarDesc(j).value
                                 for j in range(attr.cVars)}
         elif attr.typekind == 5:  # coclass : interfaces implémentées
@@ -758,7 +758,7 @@ def symbols(projet, programme=None, filtre=None, max_resultats=500):
 # Structure du dossier d'un projet (lecture du système de fichiers uniquement)
 # --------------------------------------------------------------------------
 
-def project_files(projet, profondeur=2):
+def project_files(projet, profondeur=2, min_ko=0):
     root = _try_get(find_project(projet), "LogPath")
     by_ext, dirs = {}, []
     for current, subdirs, files in os.walk(root):
@@ -774,11 +774,127 @@ def project_files(projet, profondeur=2):
             ext = os.path.splitext(f)[1].lower() or "(sans)"
             n, total = by_ext.get(ext, (0, 0))
             by_ext[ext] = (n + 1, total + fsize)
-        if depth <= profondeur:
+        if depth <= profondeur and size / 1024 >= min_ko:
             dirs.append({"dossier": rel, "fichiers": len(files), "ko": round(size / 1024)})
     exts = sorted(by_ext.items(), key=lambda kv: -kv[1][1])
     return {
         "racine": root,
         "dossiers": dirs,
         "extensions": [{"ext": e, "nb": n, "ko": round(t / 1024)} for e, (n, t) in exts[:40]],
+    }
+
+
+# --------------------------------------------------------------------------
+# Structure d'appel du programme (ExportProgramStructure : écrit un fichier)
+# --------------------------------------------------------------------------
+
+import functools  # noqa: E402
+import operator  # noqa: E402
+
+S7_SOURCE_CONTAINER = 1122308
+
+
+def typelib_constants(module_name):
+    _check_env()
+    tlb, _ = _load_typelib(PROGID)
+    for i in range(tlb.GetTypeInfoCount()):
+        ti = tlb.GetTypeInfo(i)
+        if ti.GetDocumentation(-1)[0] == module_name:
+            attr = ti.GetTypeAttr()
+            return {ti.GetNames(ti.GetVarDesc(j).memid)[0]: ti.GetVarDesc(j).value
+                    for j in range(attr.cVars)}
+    return {}
+
+
+def program_structure(projet, programme=None, colonnes=None, appels_multiples=False, max_caracteres=150000):
+    prog = _cpu_programs(find_project(projet), programme)[0]
+    m = members(prog).get("exportprogramstructure")
+    if m is None:
+        raise SimaticError("ExportProgramStructure n'est pas disponible sur ce programme.")
+    if colonnes is None:
+        values = [v for v in typelib_constants("S7XRefXportColumns").values() if isinstance(v, int)]
+        colonnes = functools.reduce(operator.or_, values, 0)
+    folder = tempfile.mkdtemp(prefix="mcp_simatic_struct_")
+    path = os.path.join(folder, "structure_programme.txt")
+    try:
+        prog._oleobj_.Invoke(m["memid"], 0, pythoncom.DISPATCH_METHOD, True, path, bool(appels_multiples), colonnes)
+    except Exception as exc:
+        raise SimaticError(f"Échec de ExportProgramStructure : {com_message(exc)} (colonnes={colonnes})")
+    text = _read_text(path)
+    return {"fichier": path, "colonnes": colonnes, "taille_caracteres": len(text),
+            "tronque": len(text) > max_caracteres, "contenu": text[:max_caracteres]}
+
+
+# --------------------------------------------------------------------------
+# Génération de source (EXPÉRIMENTAL, peut modifier le projet)
+# --------------------------------------------------------------------------
+
+WRITE_ENV = "SIMATIC_PROJETS_ECRITURE"
+
+
+def _write_allowed(proj):
+    allowed = [_norm(p) for p in os.environ.get(WRITE_ENV, "").split(";") if p.strip()]
+    path = _norm(_try_get(proj, "LogPath"))
+    return any(path == a or path.startswith(a + "\\") for a in allowed)
+
+
+def _source_items(prog):
+    for cont in enum_items(get_member(prog, "Next")):
+        if _try_get(cont, "ConcreteType") == S7_SOURCE_CONTAINER:
+            return cont
+    raise SimaticError("Dossier des sources introuvable dans ce programme.")
+
+
+def _call(obj, name, *args):
+    m = members(obj).get(name.lower())
+    if m is None or "methode" not in m["kinds"]:
+        raise SimaticError(f"Méthode {name} indisponible sur {interface_name(obj)}.")
+    return obj._oleobj_.Invoke(m["memid"], 0, pythoncom.DISPATCH_METHOD, True, *args)
+
+
+def generate_source(projet, chemin, flags=0, nettoyer=True, max_caracteres=150000):
+    proj = find_project(projet)
+    if not _write_allowed(proj):
+        raise SimaticError(
+            "generer_source peut ajouter une source au projet : refusé. Cet outil n'est autorisé que "
+            f"sur les projets listés dans la variable d'environnement {WRITE_ENV} (chemins séparés par ';')."
+        )
+    obj = navigate(proj, chemin)
+    name = _try_get(obj, "Name") or "source"
+    sources = _source_items(get_member(obj, "Program"))
+    before = {(_try_get(s, "Name") or "") for s in enum_items(get_member(sources, "Next"))}
+    folder = tempfile.mkdtemp(prefix="mcp_simatic_gen_")
+    base = "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+    path = os.path.join(folder, base + ".awl")
+    try:
+        _call(obj, "GenerateSource", path, flags)
+    except Exception as exc:
+        raise SimaticError(f"Échec de GenerateSource('{path}', {flags}) : {com_message(exc)}")
+    created = [s for s in enum_items(get_member(sources, "Next")) if (_try_get(s, "Name") or "") not in before]
+    created_names = [_try_get(s, "Name") for s in created]
+    text, origin = None, None
+    if os.path.exists(path):
+        text, origin = _read_text(path), "fichier"
+    elif created:
+        export_path = os.path.join(folder, base + "_export.awl")
+        _call(created[0], "Export", export_path)
+        text, origin = _read_text(export_path), "source exportée"
+    cleaned = []
+    if nettoyer:
+        for src in created:
+            src_name = _try_get(src, "Name")
+            try:
+                _call(src, "Remove")
+                cleaned.append(src_name)
+            except Exception as exc:
+                cleaned.append(f"{src_name} (échec suppression : {com_message(exc)})")
+    return {
+        "objet": name,
+        "fichier": path if origin == "fichier" else None,
+        "origine_contenu": origin,
+        "sources_creees_dans_projet": created_names,
+        "sources_supprimees": cleaned,
+        "taille_caracteres": len(text or ""),
+        "tronque": len(text or "") > max_caracteres,
+        "contenu": (text or "")[:max_caracteres],
     }

@@ -14,10 +14,14 @@ import traceback
 # Le canal stdout est réservé aux messages MCP : tout print() part sur stderr.
 _OUT = sys.stdout.buffer
 sys.stdout = sys.stderr
+try:
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 import simatic_com as s7  # noqa: E402
 
-SERVER_INFO = {"name": "simatic-step7", "version": "0.1.0"}
+SERVER_INFO = {"name": "simatic-step7", "version": "0.2.0"}
 SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
 _PROJET = {
@@ -29,8 +33,9 @@ _CHEMIN = {
     "type": "array",
     "items": {"type": "string"},
     "description": "Étapes de navigation depuis le projet : nom d'une propriété "
-                   "(ex. 'Programs', 'Stations', 'Next') ou nom/numéro (à partir de 1) "
-                   "d'un élément de collection. Ex. ['Programs', '<programme>', 'Next', "
+                   "(ex. 'Programs', 'Stations', 'Next') ou nom, numéro (à partir de 1) ou "
+                   "chemin LogPath (contient '\\\\', utile si les noms sont en double) d'un "
+                   "élément de collection. Ex. ['Programs', '<programme>', 'Next', "
                    "'<conteneur>', 'Next', 'FB1'].",
 }
 
@@ -91,6 +96,71 @@ TOOLS = [
             "required": ["projet", "chemin"],
         },
         "handler": s7.export,
+    },
+    {
+        "name": "config_materielle",
+        "description": "Configuration matérielle d'un projet : exporte chaque station en .cfg "
+                       "(sans rien modifier) et renvoie les modules par emplacement (rack, "
+                       "slot, esclave DP...) avec référence, firmware, adresses E/S et "
+                       "paramètres réseau.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projet": _PROJET,
+                "station": {"type": "string", "description": "Nom de la station (défaut : toutes)."},
+                "details": {"type": "boolean", "description": "Inclure tous les attributs des modules (défaut : non)."},
+                "dossier_sortie": {"type": "string", "description": "Dossier où conserver les fichiers .cfg."},
+            },
+            "required": ["projet"],
+        },
+        "handler": s7.hardware,
+    },
+    {
+        "name": "adresses_reseau",
+        "description": "Tableau des adresses réseau : IP/masque/passerelle/MAC/nom d'appareil "
+                       "des interfaces Ethernet, adresses PROFIBUS (maîtres et esclaves), "
+                       "MPI, périphériques PROFINET. Sur un projet, ou sur tous les projets "
+                       "(hors exemples et bibliothèques) filtrés par 'filtre'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projet": _PROJET,
+                "filtre": {"type": "string", "description": "Texte dans le nom/chemin des projets à inclure (ex. 'Pr948v09\\\\')."},
+            },
+        },
+        "handler": s7.network,
+    },
+    {
+        "name": "rechercher",
+        "description": "Recherche un texte (repère de boucle, nom de bloc, diagramme CFC, "
+                       "mnémonique...) dans les noms, noms symboliques et commentaires des "
+                       "éléments de tous les programmes S7 (blocs, sources, diagrammes...).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "texte": {"type": "string", "description": "Texte recherché (insensible à la casse)."},
+                "projet": _PROJET,
+                "filtre_projets": {"type": "string", "description": "Si pas de projet : texte dans le nom/chemin des projets à parcourir."},
+                "max_resultats": {"type": "integer", "description": "Défaut 200."},
+            },
+            "required": ["texte"],
+        },
+        "handler": s7.search,
+    },
+    {
+        "name": "decrire_interface_com",
+        "description": "Décrit la bibliothèque de types d'un composant COM à partir de son "
+                       "ProgID (interfaces, méthodes, énumérations), sans créer d'objet. "
+                       "Sert à découvrir les API (CFC, SFC, HW Config, NetPro...).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "progid": {"type": "string", "description": "Ex. 'Simatic.Simatic', 'CfcEditor', 'Sfc.Document'."},
+                "filtre": {"type": "string", "description": "Ne garder que les types dont le nom contient ce texte."},
+            },
+            "required": ["progid"],
+        },
+        "handler": s7.describe_typelib,
     },
 ]
 _TOOLS_BY_NAME = {t["name"]: t for t in TOOLS}

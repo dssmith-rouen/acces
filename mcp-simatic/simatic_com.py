@@ -34,6 +34,13 @@ PROGID = "Simatic.Simatic"
 # Méthodes sans effet de bord autorisées pendant la navigation.
 SAFE_METHODS = {"next"}
 
+# Propriétés qui déclenchent un accès EN LIGNE (automate, carte mémoire...) :
+# jamais lues, jamais navigables.
+ONLINE_PROPS = {
+    "hpeercpustate", "hsystemstate", "ishsystemmastercpu", "modulestate",
+    "onlineblocks", "memcard", "memcardfile",
+}
+
 # Méthodes IUnknown / IDispatch à masquer dans les descriptions.
 _HIDDEN = {
     "queryinterface", "addref", "release", "gettypeinfocount",
@@ -213,6 +220,8 @@ def signatures(obj):
 
 def get_member(obj, name):
     """Lit une propriété (ou appelle une méthode de la liste blanche) sans paramètre."""
+    if name.lower() in ONLINE_PROPS:
+        raise SimaticError(f"'{name}' nécessite un accès en ligne à l'automate : refusé (serveur hors ligne).")
     ms = members(obj)
     m = ms.get(name.lower())
     if m is None:
@@ -275,6 +284,9 @@ def read_properties(obj):
         get = m["kinds"].get("get")
         if not get or get["required"] != 0 or m["name"].startswith("_"):
             continue
+        if m["name"].lower() in ONLINE_PROPS:
+            props[m["name"]] = "<non lu : accès en ligne>"
+            continue
         try:
             value = obj._oleobj_.Invoke(m["memid"], 0, pythoncom.DISPATCH_PROPERTYGET, True)
         except Exception as exc:
@@ -332,6 +344,12 @@ def find_item(coll, key):
         if key.isdigit():
             for idx, item in enumerate(items, start=1):
                 if idx == int(key):
+                    return item
+        elif "\\" in key:
+            target = _norm(key)
+            for item in items:
+                path = _norm(_try_get(item, "LogPath"))
+                if path == target or path.endswith("\\" + target):
                     return item
         else:
             for item in items:
@@ -435,3 +453,202 @@ def export(projet, chemin, dossier_sortie=None, nom_fichier=None, max_caracteres
         "tronque": len(text) > max_caracteres,
         "contenu": text[:max_caracteres],
     }
+
+
+# --------------------------------------------------------------------------
+# Configuration matérielle et adresses réseau (via export .cfg des stations)
+# --------------------------------------------------------------------------
+
+import hw_config  # noqa: E402
+
+PROJECT_TYPE_PROJECT = 1122305  # 1122306 = bibliothèque, 1122320 = multiprojet
+_cfg_cache = {}
+
+
+def _station_cfg(proj, station, dossier_sortie=None):
+    """Exporte une station en .cfg (avec cache tant que le projet n'a pas changé)."""
+    key = (_norm(_try_get(proj, "LogPath")), _try_get(station, "Name"), _try_get(proj, "Modified"))
+    if key in _cfg_cache and not dossier_sortie:
+        return _cfg_cache[key]
+    m = members(station).get("export")
+    if m is None:
+        raise SimaticError(f"La station {key[1]} ne propose pas d'export.")
+    folder = dossier_sortie or tempfile.mkdtemp(prefix="mcp_simatic_hw_")
+    os.makedirs(folder, exist_ok=True)
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in f"{os.path.basename(key[0])}_{key[1]}")
+    path = os.path.join(folder, safe + ".cfg")
+    try:
+        station._oleobj_.Invoke(m["memid"], 0, pythoncom.DISPATCH_METHOD, True, path)
+    except Exception as exc:
+        raise SimaticError(f"Échec de l'export de la station {key[1]} : {com_message(exc)}")
+    text = _read_text(path)
+    _cfg_cache[key] = (text, path)
+    return text, path
+
+
+def _stations(proj, station=None):
+    found = []
+    for st in enum_items(get_member(proj, "Stations")):
+        if station is None or (_try_get(st, "Name") or "").lower() == station.lower():
+            found.append(st)
+    if station and not found:
+        raise SimaticError(f"Station '{station}' introuvable dans ce projet.")
+    return found
+
+
+def hardware(projet, station=None, details=False, dossier_sortie=None):
+    proj = find_project(projet)
+    res = []
+    for st in _stations(proj, station):
+        text, path = _station_cfg(proj, st, dossier_sortie)
+        parsed = hw_config.parse_cfg(text)
+        res.append({
+            "station": _try_get(st, "Name"),
+            "fichier_cfg": path,
+            "entete": parsed["entete"],
+            "modules": hw_config.summarize(parsed, details=details),
+        })
+    return res
+
+
+def _projects_for(projet=None, filtre=None):
+    if projet:
+        return [find_project(projet)]
+    out = []
+    for proj in enum_items(get_member(app(), "Projects")):
+        path = _norm(_try_get(proj, "LogPath")) + "\\"
+        if any(mark in path for mark in _EXCLUDED_MARKERS):
+            continue
+        if _try_get(proj, "Type") != PROJECT_TYPE_PROJECT:
+            continue
+        if filtre and filtre.lower() not in f"{_try_get(proj, 'Name')} {path}".lower():
+            continue
+        out.append(proj)
+    return out
+
+
+def network(projet=None, filtre=None):
+    rows, errors = [], []
+    for proj in _projects_for(projet, filtre):
+        pname = _try_get(proj, "Name")
+        for st in _stations(proj):
+            sname = _try_get(st, "Name")
+            try:
+                parsed = hw_config.parse_cfg(_station_cfg(proj, st)[0])
+            except SimaticError as exc:
+                errors.append(f"{pname}/{sname} : {exc}")
+                continue
+            for row in hw_config.network_view(parsed):
+                rows.append({"projet": pname, "station": sname, **row})
+    res = {"interfaces": rows, "nb": len(rows)}
+    if errors:
+        res["erreurs"] = errors
+    return res
+
+
+# --------------------------------------------------------------------------
+# Recherche transverse (blocs, sources, diagrammes, ...)
+# --------------------------------------------------------------------------
+
+_SEARCH_PROPS = ("Name", "SymbolicName", "Comment", "Author", "Family", "Header")
+
+
+def search(texte, projet=None, filtre_projets=None, max_resultats=200):
+    needle = texte.lower()
+    hits, scanned = [], 0
+    for proj in _projects_for(projet, filtre_projets):
+        pname = _try_get(proj, "Name")
+        for prog in enum_items(get_member(proj, "Programs")):
+            prog_path = _try_get(prog, "LogPath")
+            try:
+                containers = list(enum_items(get_member(prog, "Next")))
+            except Exception:
+                continue
+            for cont in containers:
+                cname = _try_get(cont, "Name")
+                try:
+                    items = enum_items(get_member(cont, "Next"))
+                except Exception:
+                    continue
+                for item in items:
+                    scanned += 1
+                    available = members(item)
+                    values = {p: _try_get(item, p) for p in _SEARCH_PROPS if p.lower() in available}
+                    matched = {p: v for p, v in values.items() if isinstance(v, str) and needle in v.lower()}
+                    if matched:
+                        hits.append({
+                            "projet": pname, "programme": prog_path, "conteneur": cname,
+                            "objet": interface_name(item), **{k: v for k, v in values.items() if v not in (None, "")},
+                            "trouve_dans": sorted(matched),
+                        })
+                        if len(hits) >= max_resultats:
+                            return {"resultats": hits, "tronque": True, "elements_parcourus": scanned}
+    return {"resultats": hits, "tronque": False, "elements_parcourus": scanned}
+
+
+# --------------------------------------------------------------------------
+# Description d'une bibliothèque de types COM (sans créer d'objet)
+# --------------------------------------------------------------------------
+
+_TKIND = {0: "enum", 1: "record", 2: "module", 3: "interface", 4: "dispinterface",
+          5: "coclass", 6: "alias", 7: "union"}
+
+
+def _load_typelib(progid):
+    import winreg
+
+    def read(path, value=""):
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, path) as k:
+            return winreg.QueryValueEx(k, value)[0]
+
+    try:
+        clsid = read(progid + "\\CLSID") if not progid.startswith("{") else progid
+    except OSError:
+        raise SimaticError(f"ProgID '{progid}' introuvable dans le registre (vue 32 bits).")
+    try:
+        libid = read(f"CLSID\\{clsid}\\TypeLib")
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, f"TypeLib\\{libid}") as k:
+            version = winreg.EnumKey(k, 0)
+        major, minor = (int(x, 16) for x in version.split("."))
+        return pythoncom.LoadRegTypeLib(libid, major, minor, 0), clsid
+    except Exception:
+        pass
+    for server in ("InprocServer32", "LocalServer32"):
+        try:
+            path = read(f"CLSID\\{clsid}\\{server}").strip('"').split('" ')[0]
+            return pythoncom.LoadTypeLib(path), clsid
+        except Exception:
+            continue
+    raise SimaticError(f"Aucune bibliothèque de types trouvée pour '{progid}' ({clsid}).")
+
+
+def describe_typelib(progid, filtre=None):
+    _check_env()
+    tlb, clsid = _load_typelib(progid)
+    out = {"progid": progid, "clsid": clsid, "bibliotheque": tlb.GetDocumentation(-1)[0], "types": []}
+    for i in range(tlb.GetTypeInfoCount()):
+        ti = tlb.GetTypeInfo(i)
+        attr = ti.GetTypeAttr()
+        name, doc = ti.GetDocumentation(-1)[:2]
+        if filtre and filtre.lower() not in name.lower():
+            continue
+        entry = {"nom": name, "genre": _TKIND.get(attr.typekind, attr.typekind)}
+        if doc:
+            entry["doc"] = doc
+        if attr.typekind == 0:  # enum : valeurs
+            entry["valeurs"] = {ti.GetNames(ti.GetVarDesc(j).memid)[0]: ti.GetVarDesc(j).value
+                                for j in range(attr.cVars)}
+        elif attr.typekind == 5:  # coclass : interfaces implémentées
+            entry["interfaces"] = [ti.GetRefTypeInfo(ti.GetRefTypeOfImplType(j)).GetDocumentation(-1)[0]
+                                   for j in range(attr.cImplTypes)]
+        else:
+            sigs = []
+            for j in range(attr.cFuncs):
+                fd = ti.GetFuncDesc(j)
+                names = ti.GetNames(fd.memid)
+                if names and names[0].lower() not in _HIDDEN:
+                    sigs.append(f"{_INVKIND.get(fd.invkind, fd.invkind)} {names[0]}({', '.join(names[1:])})")
+            if sigs:
+                entry["membres"] = sigs
+        out["types"].append(entry)
+    return out

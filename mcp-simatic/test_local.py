@@ -103,20 +103,30 @@ def scan_com_registry():
     return found
 
 
+PROGIDS_A_DECRIRE = (
+    "Simatic.Simatic", "CfcEditor", "CFC-Plan", "Sfc.Document", "SfcEditor", "CSfcServer",
+    "S7jieaEx.Document", "S7JWZAPX.PCS7Wizard", "IS7hwcnfxAutomation", "S7hwcnfx.Document",
+    "NetproAutomation",
+)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--projet", help="Chemin du projet à explorer (LogPath).")
+    parser.add_argument("--filtre-multiprojet", default="\\Pr948v09\\",
+                        help="Filtre des projets pour adresses_reseau.")
+    parser.add_argument("--recherche", default="PID", help="Texte pour l'outil rechercher.")
     parser.add_argument("--sortie", default=os.path.join(HERE, "rapport_test.txt"))
-    parser.add_argument("--sans-export-hw", action="store_true",
-                        help="Ne pas tenter l'export de la configuration matérielle.")
+    parser.add_argument("--sortie-com", default=os.path.join(HERE, "rapport_interfaces_com.txt"))
     args = parser.parse_args()
 
     out = open(args.sortie, "w", encoding="utf-8")
 
-    def section(title, payload):
+    def section(title, payload, fichier=None):
+        f = fichier or out
         text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False, indent=2)
-        out.write(f"\n===== {title} =====\n{text}\n")
-        out.flush()
+        f.write(f"\n===== {title} =====\n{text}\n")
+        f.flush()
         print(f"- {title}")
 
     client = Client()
@@ -126,58 +136,64 @@ def main():
             "clientInfo": {"name": "test_local", "version": "0"},
         })
         client.notify("notifications/initialized")
-        section("initialize", init)
+        section("initialize", init["result"]["serverInfo"])
         tools = client.request("tools/list")
         section("outils", [t["name"] for t in tools["result"]["tools"]])
         section("simatic_etat", client.tool("simatic_etat")[1])
-        section("lister_projets", client.tool("lister_projets")[1])
-        section("ProgID COM CFC/SFC/XML/PH (32 bits)", "\n".join(scan_com_registry()))
 
         if args.projet:
             p = args.projet
-            section("explorer racine Simatic", client.tool("explorer", chemin=[], max_elements=0)[1])
-            section("explorer projet", client.tool("explorer", projet=p, chemin=[])[1])
-
-            # --- Matériel ---
-            err, stations = client.tool("explorer", projet=p, chemin=["Stations"])
-            section("explorer Stations", stations)
-            if not err and stations.get("elements"):
-                st = stations["elements"][0].get("Name", "1")
-                section(f"explorer station {st}", client.tool("explorer", projet=p, chemin=["Stations", st])[1])
-                if not args.sans_export_hw:
-                    err_hw, hw = client.tool("exporter", projet=p, chemin=["Stations", st],
-                                             nom_fichier="station.cfg", max_caracteres=20000)
-                    section(f"export HW station {st} (20000 premiers caractères)", hw)
-
-            # --- Programmes S7 ---
-            err, progs = client.tool("explorer", projet=p, chemin=["Programs"])
-            section("explorer Programs", progs)
-            if not err and progs.get("elements"):
-                prog = progs["elements"][0].get("Name", "1")
-                base = ["Programs", prog]
-                section(f"explorer programme {prog}", client.tool("explorer", projet=p, chemin=base)[1])
-                err, conts = client.tool("explorer", projet=p, chemin=base + ["Next"])
-                section("explorer conteneurs du programme (Next)", conts)
-                if not err:
+            # --- Programme S7 de la CPU (pas ceux des esclaves DP) ---
+            err, progs = client.tool("explorer", projet=p, chemin=["Programs"], avec_signatures=False)
+            if err:
+                section("explorer Programs", progs)
+            else:
+                cpu_progs = [e for e in progs.get("elements", []) if e.get("Type") == 1327361] \
+                    or progs.get("elements", [])[-1:]
+                section("programmes CPU retenus", cpu_progs)
+                for prog in cpu_progs[:2]:
+                    base = ["Programs", prog.get("LogPath") or prog.get("Name")]
+                    section(f"programme {prog.get('Name')}", client.tool("explorer", projet=p, chemin=base)[1])
+                    err, conts = client.tool("explorer", projet=p, chemin=base + ["Next"])
+                    section(f"conteneurs de {prog.get('Name')}", conts)
+                    if err:
+                        continue
                     for c in conts.get("elements", [])[:8]:
                         cname = c.get("Name")
                         if not cname:
                             continue
+                        section(f"conteneur '{cname}' (objet)",
+                                client.tool("explorer", projet=p, chemin=base + ["Next", cname])[1])
                         err, items = client.tool("explorer", projet=p, chemin=base + ["Next", cname, "Next"],
-                                                 max_elements=15)
-                        section(f"conteneur '{cname}' -> Next (15 premiers)", items)
+                                                 max_elements=25, avec_signatures=False)
+                        section(f"conteneur '{cname}' -> éléments (25 premiers)", items)
                         if not err and items.get("elements"):
                             first = items["elements"][0].get("Name", "1")
                             section(f"premier élément de '{cname}' : {first}",
                                     client.tool("explorer", projet=p,
                                                 chemin=base + ["Next", cname, "Next", first])[1])
+
+            # --- Matériel et réseau ---
+            err, hw = client.tool("config_materielle", projet=p)
+            section("config_materielle", hw)
+            section(f"recherche '{args.recherche}' dans le projet",
+                    client.tool("rechercher", texte=args.recherche, projet=p, max_resultats=40)[1])
+
+        section(f"adresses_reseau (filtre {args.filtre_multiprojet})",
+                client.tool("adresses_reseau", filtre=args.filtre_multiprojet)[1])
+
+        # --- API COM disponibles (fichier séparé, volumineux) ---
+        with open(args.sortie_com, "w", encoding="utf-8") as fcom:
+            section("ProgID COM CFC/SFC/XML/PH (32 bits)", "\n".join(scan_com_registry()), fcom)
+            for progid in PROGIDS_A_DECRIRE:
+                section(f"interface COM {progid}", client.tool("decrire_interface_com", progid=progid)[1], fcom)
     except Exception as exc:
         section("ERREUR DU TEST", f"{type(exc).__name__} : {exc}")
     finally:
         client.close()
         section("stderr du serveur (fin)", "\n".join(client.stderr[-40:]))
         out.close()
-    print(f"\nRapport écrit dans : {args.sortie}")
+    print(f"\nRapports écrits dans :\n  {args.sortie}\n  {args.sortie_com}")
 
 
 if __name__ == "__main__":

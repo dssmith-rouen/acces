@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "simatic": {
+      "command": "C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python312-32\\python.exe",
+      "args": ["C:\\Claude cloud test\\acces\\mcp-simatic\\server.py"]
+    }
+  }
+}

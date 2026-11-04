@@ -4,7 +4,7 @@ Lance server.py avec le même Python, dialogue avec lui comme le ferait Claude,
 explore un projet et écrit un rapport texte à renvoyer.
 
 Usage (Python 32 bits) :
-    py -3.12-32 test_local.py --projet "C:\\...\\S7Proj\\Pr948v09\\Uc1"
+    py -3.12-32 test_local.py --projet "C:\\...\\S7Proj\\MonMulti\\AS1"
 """
 
 import argparse
@@ -176,7 +176,8 @@ def experience_cfc(args):
              projet=p, profondeur=8, min_ko=1000)
 
         # 3) Interfaces de blocs SCL (en-têtes seulement) et paramètres d'instances
-        fb860 = [e["Name"] for e in els if e.get("SymbolicName") == "VP_PID"][:1]
+        fb860 = [e["Name"] for e in els if args.bloc_regulateur
+                 and e.get("SymbolicName") == args.bloc_regulateur][:1]
         small_fc = sorted((e for e in es_map_fc if e.get("Size")), key=lambda e: e["Size"])
         for name, flags in [(n, 256) for n in fb860] + [(n, 32) for n in fb860] + \
                 [(e["Name"], 256) for e in small_fc[:1]]:
@@ -210,17 +211,17 @@ PROGIDS_A_DECRIRE = (
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--projet", help="Chemin du projet à explorer (LogPath).")
-    parser.add_argument("--filtre-multiprojet", default="\\Pr948v09\\",
+    parser.add_argument("--filtre-multiprojet", default=None,
                         help="Filtre des projets pour adresses_reseau.")
-    parser.add_argument("--recherche", default="PID", help="Texte pour l'outil rechercher.")
+    parser.add_argument("--recherche", default="PID", help="Texte pour les outils de recherche.")
     parser.add_argument("--complet", action="store_true",
                         help="Ajoute la config matérielle complète, le réseau du multiprojet et les API COM.")
     parser.add_argument("--experience-cfc", action="store_true",
                         help="Expérience sur la COPIE du projet : structure d'appel, blocs liés à un "
                              "diagramme, génération de sources (peut modifier la copie).")
-    parser.add_argument("--projet-copie",
-                        default=r"C:\Program Files (x86)\SIEMENS\STEP7\s7proj\Pr948v_1\Uc1")
-    parser.add_argument("--diagramme", default="71_0011_HIC")
+    parser.add_argument("--projet-copie", help="Chemin de la COPIE du projet (obligatoire pour l'expérience).")
+    parser.add_argument("--diagramme", help="Nom d'un diagramme CFC pour l'expérience.")
+    parser.add_argument("--bloc-regulateur", help="Nom symbolique d'un FB régulateur (ex. un PID maison).")
     parser.add_argument("--avec-structure", action="store_true",
                         help="Ajoute l'export de la structure d'appel (long sur un gros programme).")
     parser.add_argument("--sortie", default=os.path.join(HERE, "rapport_test.txt"))
@@ -237,6 +238,8 @@ def main():
         print(f"- {title}")
 
     if args.experience_cfc:
+        if not args.projet_copie or not args.diagramme:
+            parser.error("--experience-cfc demande --projet-copie et --diagramme")
         return experience_cfc(args)
 
     client = Client()

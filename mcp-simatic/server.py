@@ -8,7 +8,9 @@ Lancement : <python 32 bits> server.py   (normalement lancé par Claude Desktop)
 """
 
 import json
+import os
 import sys
+import time
 import traceback
 
 # Le canal stdout est réservé aux messages MCP : tout print() part sur stderr.
@@ -21,12 +23,12 @@ except Exception:
 
 import simatic_com as s7  # noqa: E402
 
-SERVER_INFO = {"name": "simatic-step7", "version": "0.4.0"}
+SERVER_INFO = {"name": "simatic-step7", "version": "0.5.0"}
 SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
 _PROJET = {
     "type": "string",
-    "description": "Chemin du projet (LogPath, ex. C:\\...\\S7Proj\\Pr948v09\\Uc1) "
+    "description": "Chemin du projet (LogPath, ex. C:\\...\\S7Proj\\MonMulti\\AS1) "
                    "ou nom s'il est unique.",
 }
 _CHEMIN = {
@@ -126,7 +128,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "projet": _PROJET,
-                "filtre": {"type": "string", "description": "Texte dans le nom/chemin des projets à inclure (ex. 'Pr948v09\\\\')."},
+                "filtre": {"type": "string", "description": "Texte dans le nom/chemin des projets à inclure (ex. '\\\\MonMulti\\\\')."},
             },
         },
         "handler": s7.network,
@@ -142,11 +144,29 @@ TOOLS = [
                 "texte": {"type": "string", "description": "Texte recherché (insensible à la casse)."},
                 "projet": _PROJET,
                 "filtre_projets": {"type": "string", "description": "Si pas de projet : texte dans le nom/chemin des projets à parcourir."},
+                "mot_entier": {"type": "boolean", "description": "Recherche par mot entier : 'PID' ne trouve pas 'RAPIDE' (défaut : non)."},
                 "max_resultats": {"type": "integer", "description": "Défaut 200."},
             },
             "required": ["texte"],
         },
         "handler": s7.search,
+    },
+    {
+        "name": "tracer_boucle",
+        "description": "Fiche d'une boucle ou d'un équipement à partir de son repère (ex. "
+                       "'12_0345_FRC' ou '12_0345') : diagrammes CFC/SFC correspondants, "
+                       "mnémoniques du repère et, pour chaque entrée/sortie, le câblage "
+                       "(station décentralisée, adresse PROFIBUS, emplacement, carte, voie).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projet": _PROJET,
+                "repere": {"type": "string", "description": "Repère de la boucle ou du diagramme."},
+                "prefixe": {"type": "string", "description": "Préfixe commun aux mnémoniques (défaut : déduit du repère, ex. '12_0345')."},
+            },
+            "required": ["projet", "repere"],
+        },
+        "handler": s7.trace_loop,
     },
     {
         "name": "lister_elements",
@@ -161,6 +181,8 @@ TOOLS = [
                 "conteneur": {"type": "string", "description": "'Charts', 'Blocks' ou 'Sources' (défaut 'Charts')."},
                 "programme": {"type": "string", "description": "LogPath du programme (défaut : programmes S7 de la CPU)."},
                 "filtre": {"type": "string", "description": "Texte recherché (insensible à la casse)."},
+                "mot_entier": {"type": "boolean", "description": "Recherche par mot entier : 'PID' ne trouve pas 'RAPIDE' (défaut : non)."},
+                "genre": {"type": "string", "description": "Ne garder qu'un genre : FB, FC, DB, OB, 'Diagramme CFC', 'Diagramme SFC'..."},
                 "max_resultats": {"type": "integer", "description": "Défaut 500."},
             },
             "required": ["projet"],
@@ -178,6 +200,7 @@ TOOLS = [
                 "projet": _PROJET,
                 "programme": {"type": "string", "description": "LogPath du programme (défaut : programmes S7 de la CPU)."},
                 "filtre": {"type": "string", "description": "Texte recherché dans le symbole, l'adresse ou le commentaire."},
+                "mot_entier": {"type": "boolean", "description": "Recherche par mot entier : 'PID' ne trouve pas 'RAPIDE' (défaut : non)."},
                 "max_resultats": {"type": "integer", "description": "Défaut 500."},
             },
             "required": ["projet"],
@@ -273,6 +296,28 @@ def _error(id_, code, message):
     return {"jsonrpc": "2.0", "id": id_, "error": {"code": code, "message": message}}
 
 
+# Codes COM indiquant que SIMATIC (ou son serveur RPC) a été fermé : on recrée l'objet racine.
+_RECONNECT_HRESULTS = {0x800706BA, 0x800706BE, 0x80010108, 0x80010012}
+_LOG_PATH = os.environ.get("SIMATIC_MCP_LOG")
+
+
+def _journal(line):
+    if not _LOG_PATH:
+        return
+    try:
+        with open(_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
+    except OSError:
+        pass
+
+
+def _hresult(exc):
+    try:
+        return exc.args[0] & 0xFFFFFFFF
+    except Exception:
+        return None
+
+
 def _call_tool(params):
     name = params.get("name")
     tool = _TOOLS_BY_NAME.get(name)
@@ -280,15 +325,101 @@ def _call_tool(params):
         return None
     allowed = tool["inputSchema"].get("properties", {})
     args = {k: v for k, v in (params.get("arguments") or {}).items() if k in allowed}
-    try:
-        data = tool["handler"](**args)
-        text, is_error = json.dumps(data, ensure_ascii=False, indent=2, default=str), False
-    except s7.SimaticError as exc:
-        text, is_error = str(exc), True
-    except Exception as exc:  # erreur COM ou inattendue
-        _log(traceback.format_exc())
-        text, is_error = f"{type(exc).__name__} : {s7.com_message(exc)}", True
+    missing = [k for k in tool["inputSchema"].get("required", []) if k not in args]
+    started = time.time()
+    if missing:
+        text, is_error = f"Paramètre(s) obligatoire(s) manquant(s) : {', '.join(missing)}", True
+    else:
+        for attempt in (1, 2):
+            try:
+                data = tool["handler"](**args)
+                text, is_error = json.dumps(data, ensure_ascii=False, indent=2, default=str), False
+                break
+            except s7.SimaticError as exc:
+                text, is_error = str(exc), True
+                break
+            except Exception as exc:  # erreur COM ou inattendue
+                if attempt == 1 and _hresult(exc) in _RECONNECT_HRESULTS:
+                    _log("connexion COM perdue, nouvelle tentative")
+                    s7.reset()
+                    continue
+                _log(traceback.format_exc())
+                text, is_error = f"{type(exc).__name__} : {s7.com_message(exc)}", True
+                break
+    _journal(f"{name} {json.dumps(args, ensure_ascii=False)} -> "
+             f"{'ERREUR' if is_error else 'ok'} ({time.time() - started:.1f} s)"
+             + (f" {text[:300]}" if is_error else ""))
     return {"content": [{"type": "text", "text": text}], "isError": is_error}
+
+
+# --------------------------------------------------------------------------
+# Modèles de demande (prompts MCP) proposés dans Claude Desktop
+# --------------------------------------------------------------------------
+
+PROMPTS = [
+    {
+        "name": "analyser_boucle",
+        "description": "Fiche complète d'une boucle : rôle, instrumentation, câblage, points d'attention.",
+        "arguments": [
+            {"name": "repere", "description": "Repère de la boucle (ex. 12_0345_FRC)", "required": True},
+            {"name": "projet", "description": "Chemin ou nom du projet (facultatif)", "required": False},
+        ],
+        "template": (
+            "Analyse la boucle {repere}{projet_txt} avec les outils SIMATIC. "
+            "1) Si le projet n'est pas précisé, trouve-le avec lister_projets puis rechercher. "
+            "2) Utilise tracer_boucle pour obtenir le diagramme, les mnémoniques et le câblage. "
+            "3) Explique en français le rôle probable de la boucle (mesure, régulation, actionneur), "
+            "en distinguant ce qui est lu dans le projet de ce que tu déduis des noms. "
+            "4) Présente un tableau du câblage (signal, adresse, station décentralisée, carte, voie). "
+            "5) Termine par les points à vérifier sur site ou dans le diagramme CFC."
+        ),
+    },
+    {
+        "name": "inventaire_reseau",
+        "description": "Plan d'adressage IP / PROFIBUS / MPI d'un projet ou d'un multiprojet.",
+        "arguments": [
+            {"name": "filtre", "description": "Partie du chemin des projets (facultatif)", "required": False},
+        ],
+        "template": (
+            "Dresse le plan d'adressage réseau avec l'outil adresses_reseau{filtre_txt}. "
+            "Présente un tableau des interfaces Ethernet (projet, station, module, IP, masque, "
+            "passerelle, nom d'appareil), puis un résumé PROFIBUS par station (maîtres, nombre "
+            "d'esclaves, plages d'adresses). Signale les doublons d'IP, les sous-réseaux différents "
+            "et les passerelles incohérentes."
+        ),
+    },
+    {
+        "name": "fiche_station",
+        "description": "Description matérielle d'une station : châssis, CPU, cartes, périphérie décentralisée.",
+        "arguments": [
+            {"name": "projet", "description": "Chemin ou nom du projet", "required": True},
+        ],
+        "template": (
+            "Avec l'outil config_materielle sur le projet {projet}, décris la station : châssis et "
+            "alimentation, CPU (référence, firmware), cartes de communication et leurs adresses, "
+            "puis la périphérie décentralisée regroupée par station esclave (adresse PROFIBUS, "
+            "cartes, plages d'E/S). Termine par un décompte des cartes par référence."
+        ),
+    },
+]
+_PROMPTS_BY_NAME = {p["name"]: p for p in PROMPTS}
+
+
+def _get_prompt(params):
+    prompt = _PROMPTS_BY_NAME.get(params.get("name"))
+    if prompt is None:
+        return None
+    args = params.get("arguments") or {}
+    values = {
+        "repere": args.get("repere", ""),
+        "projet": args.get("projet", ""),
+        "projet_txt": f" du projet {args['projet']}" if args.get("projet") else "",
+        "filtre_txt": f" (filtre '{args['filtre']}')" if args.get("filtre") else "",
+    }
+    return {
+        "description": prompt["description"],
+        "messages": [{"role": "user", "content": {"type": "text", "text": prompt["template"].format(**values)}}],
+    }
 
 
 def handle(msg):
@@ -302,10 +433,12 @@ def handle(msg):
         version = asked if asked in SUPPORTED_VERSIONS else SUPPORTED_VERSIONS[0]
         return _result(id_, {
             "protocolVersion": version,
-            "capabilities": {"tools": {}},
+            "capabilities": {"tools": {}, "prompts": {}},
             "serverInfo": SERVER_INFO,
-            "instructions": "Accès en lecture seule aux projets STEP 7 V5 (SIMATIC Manager). "
-                            "Commencer par lister_projets, puis explorer avec un chemin.",
+            "instructions": "Accès en lecture seule, hors ligne, aux projets STEP 7 V5 / PCS 7 "
+                            "(SIMATIC Manager). Désigner les projets par leur chemin (lister_projets). "
+                            "Pour une boucle : tracer_boucle ; pour le réseau : adresses_reseau ; "
+                            "pour le matériel : config_materielle ; sinon rechercher / explorer.",
         })
     if method == "ping":
         return _result(id_, {})
@@ -317,6 +450,15 @@ def handle(msg):
         res = _call_tool(params)
         if res is None:
             return _error(id_, -32602, f"Outil inconnu : {params.get('name')}")
+        return _result(id_, res)
+    if method == "prompts/list":
+        return _result(id_, {"prompts": [
+            {"name": p["name"], "description": p["description"], "arguments": p["arguments"]} for p in PROMPTS
+        ]})
+    if method == "prompts/get":
+        res = _get_prompt(params)
+        if res is None:
+            return _error(id_, -32602, f"Modèle inconnu : {params.get('name')}")
         return _result(id_, res)
     if id_ is None:
         return None  # notification (ex. notifications/initialized) : pas de réponse

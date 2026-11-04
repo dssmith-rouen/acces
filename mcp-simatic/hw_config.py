@@ -1,7 +1,7 @@
 """Analyse des fichiers de configuration matérielle STEP 7 exportés (.cfg).
 
 Le format .cfg (FILEVERSION 2.x) est un texte structuré :
-    RACK 0, SLOT 5, "6GK7 443-1EX20-0XE0" "V2.0", "UC01 - CP 443-1"
+    RACK 0, SLOT 5, "6GK7 443-1EX20-0XE0" "V2.0", "CPU1 - CP 443-1"
     BEGIN
       IPADDRESS "C0A8650B"
       ...

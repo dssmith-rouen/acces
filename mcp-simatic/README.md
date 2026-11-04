@@ -41,7 +41,7 @@ sont bloquées.
 
 ```powershell
 cd "C:\Claude cloud test\acces\mcp-simatic"
-py -3.12-32 test_local.py --projet "C:\Program Files (x86)\SIEMENS\STEP7\S7Proj\Pr948v09\Uc1"
+py -3.12-32 test_local.py --projet "C:\Program Files (x86)\SIEMENS\STEP7\S7Proj\MonMulti\AS1"
 ```
 
 Le script écrit `rapport_test.txt` dans ce dossier : structure du programme CPU,
@@ -88,7 +88,7 @@ projet. Les sources créées sont supprimées ensuite (`nettoyer=true` par défa
 Expérience sur la copie (structure d'appel, blocs liés à un diagramme, sources) :
 
 ```powershell
-py -3.12-32 test_local.py --experience-cfc --diagramme 71_0011_HIC
+py -3.12-32 test_local.py --experience-cfc --projet-copie "<chemin de la copie>" --diagramme <nom du diagramme>
 ```
 
 ## Feuille de route

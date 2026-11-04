@@ -489,6 +489,7 @@ def export(projet, chemin, dossier_sortie=None, nom_fichier=None, max_caracteres
 # Configuration matérielle et adresses réseau (via export .cfg des stations)
 # --------------------------------------------------------------------------
 
+import analyse  # noqa: E402
 import hw_config  # noqa: E402
 
 PROJECT_TYPE_PROJECT = 1122305  # 1122306 = bibliothèque, 1122320 = multiprojet
@@ -580,37 +581,29 @@ def network(projet=None, filtre=None):
 # Recherche transverse (blocs, sources, diagrammes, ...)
 # --------------------------------------------------------------------------
 
-_SEARCH_PROPS = ("Name", "SymbolicName", "Comment", "Author", "Family", "Header")
+_SEARCH_FIELDS = ("Name", "SymbolicName", "Comment", "Family", "HeaderName")
 
 
-def search(texte, projet=None, filtre_projets=None, max_resultats=200):
-    needle = texte.lower()
+def search(texte, projet=None, filtre_projets=None, max_resultats=200, mot_entier=False):
+    match = analyse.make_matcher(texte, mot_entier)
     hits, scanned = [], 0
     for proj in _projects_for(projet, filtre_projets):
         pname = _try_get(proj, "Name")
         for prog in enum_items(get_member(proj, "Programs")):
-            prog_path = _try_get(prog, "LogPath")
             try:
                 containers = list(enum_items(get_member(prog, "Next")))
             except Exception:
                 continue
             for cont in containers:
-                cname = _try_get(cont, "Name")
                 try:
-                    items = enum_items(get_member(cont, "Next"))
+                    rows = _container_rows(proj, prog, cont)
                 except Exception:
                     continue
-                for item in items:
+                for row in rows:
                     scanned += 1
-                    available = members(item)
-                    values = {p: _try_get(item, p) for p in _SEARCH_PROPS if p.lower() in available}
-                    matched = {p: v for p, v in values.items() if isinstance(v, str) and needle in v.lower()}
-                    if matched:
-                        hits.append({
-                            "projet": pname, "programme": prog_path, "conteneur": cname,
-                            "objet": interface_name(item), **{k: v for k, v in values.items() if v not in (None, "")},
-                            "trouve_dans": sorted(matched),
-                        })
+                    found = sorted(f for f in _SEARCH_FIELDS if match(row.get(f)))
+                    if found:
+                        hits.append({"projet": pname, **row, "trouve_dans": found})
                         if len(hits) >= max_resultats:
                             return {"resultats": hits, "tronque": True, "elements_parcourus": scanned}
     return {"resultats": hits, "tronque": False, "elements_parcourus": scanned}
@@ -712,30 +705,50 @@ def _container(prog, name):
     return None
 
 
-_LIST_PROPS = ("Name", "SymbolicName", "Comment", "Family", "Language", "Size", "Modified", "Creator")
+_ITEM_PROPS = ("Name", "SymbolicName", "Comment", "Family", "Language", "HeaderName",
+               "Size", "Modified", "Creator")
+_rows_cache = {}
 
 
-def list_items(projet, conteneur="Charts", programme=None, filtre=None, max_resultats=500):
+def _container_rows(proj, prog, cont):
+    """Propriétés de tous les éléments d'un conteneur, en cache tant qu'il n'a pas changé."""
+    key = (_norm(_try_get(proj, "LogPath")), _try_get(cont, "LogPath"),
+           _try_get(cont, "Modified"), _try_get(get_member(cont, "Next"), "Count"))
+    if key in _rows_cache:
+        return _rows_cache[key]
+    prog_path, cname = _try_get(prog, "LogPath"), _try_get(cont, "Name")
+    rows = []
+    for item in enum_items(get_member(cont, "Next")):
+        available = members(item)
+        values = {p: _try_get(item, p) for p in _ITEM_PROPS if p.lower() in available}
+        values = {k: v for k, v in values.items() if v not in (None, "")}
+        ctype = _try_get(item, "ConcreteType")
+        if ctype in CONCRETE_TYPES:
+            values["genre"] = CONCRETE_TYPES[ctype]
+        values["conteneur"] = cname
+        values["programme"] = prog_path
+        rows.append(values)
+    _rows_cache[key] = rows
+    return rows
+
+
+def list_items(projet, conteneur="Charts", programme=None, filtre=None, max_resultats=500,
+               mot_entier=False, genre=None):
     proj = find_project(projet)
-    needle = (filtre or "").lower()
+    match = analyse.make_matcher(filtre, mot_entier)
     rows, total = [], 0
     for prog in _cpu_programs(proj, programme):
         cont = _container(prog, conteneur)
         if cont is None:
             continue
-        for item in enum_items(get_member(cont, "Next")):
-            available = members(item)
-            values = {p: _try_get(item, p) for p in _LIST_PROPS if p.lower() in available}
-            values = {k: v for k, v in values.items() if v not in (None, "")}
-            if needle and not any(isinstance(v, str) and needle in v.lower() for v in values.values()):
+        for row in _container_rows(proj, prog, cont):
+            if genre and row.get("genre", "").lower() != genre.lower():
+                continue
+            if filtre and not any(match(row.get(f)) for f in _SEARCH_FIELDS):
                 continue
             total += 1
             if len(rows) < max_resultats:
-                ctype = _try_get(item, "ConcreteType")
-                if ctype in CONCRETE_TYPES:
-                    values["genre"] = CONCRETE_TYPES[ctype]
-                values["programme"] = _try_get(prog, "LogPath")
-                rows.append(values)
+                rows.append(row)
     res = {"conteneur": conteneur, "nb": total, "elements": rows}
     if total > len(rows):
         res["remarque"] = f"{total - len(rows)} élément(s) non affiché(s) (max_resultats={max_resultats})."
@@ -751,28 +764,32 @@ import formats_s7  # noqa: E402
 _sym_cache = {}
 
 
-def symbols(projet, programme=None, filtre=None, max_resultats=500):
+def _symbol_rows(proj, prog):
+    table = get_member(prog, "SymbolTable")
+    key = (_try_get(prog, "LogPath"), _norm(_try_get(proj, "LogPath")), _try_get(table, "Modified"))
+    if key not in _sym_cache:
+        m = members(table).get("export")
+        folder = tempfile.mkdtemp(prefix="mcp_simatic_sym_")
+        path = os.path.join(folder, "mnemoniques.sdf")
+        try:
+            table._oleobj_.Invoke(m["memid"], 0, pythoncom.DISPATCH_METHOD, True, path)
+        except Exception as exc:
+            raise SimaticError(f"Échec de l'export des mnémoniques : {com_message(exc)}")
+        _sym_cache[key] = [{**row, "programme": key[0]} for row in formats_s7.parse_sdf(_read_text(path))]
+    return _sym_cache[key]
+
+
+def symbols(projet, programme=None, filtre=None, max_resultats=500, mot_entier=False):
     proj = find_project(projet)
-    needle = (filtre or "").lower()
+    match = analyse.make_matcher(filtre, mot_entier)
     rows, total = [], 0
     for prog in _cpu_programs(proj, programme):
-        table = get_member(prog, "SymbolTable")
-        key = (_try_get(prog, "LogPath"), _norm(_try_get(proj, "LogPath")), _try_get(table, "Modified"))
-        if key not in _sym_cache:
-            m = members(table).get("export")
-            folder = tempfile.mkdtemp(prefix="mcp_simatic_sym_")
-            path = os.path.join(folder, "mnemoniques.sdf")
-            try:
-                table._oleobj_.Invoke(m["memid"], 0, pythoncom.DISPATCH_METHOD, True, path)
-            except Exception as exc:
-                raise SimaticError(f"Échec de l'export des mnémoniques : {com_message(exc)}")
-            _sym_cache[key] = formats_s7.parse_sdf(_read_text(path))
-        for row in _sym_cache[key]:
-            if needle and needle not in " ".join(row.values()).lower():
+        for row in _symbol_rows(proj, prog):
+            if filtre and not any(match(row.get(f)) for f in ("symbole", "adresse", "commentaire")):
                 continue
             total += 1
             if len(rows) < max_resultats:
-                rows.append({**row, "programme": key[0]})
+                rows.append(row)
     res = {"nb": total, "mnemoniques": rows}
     if total > len(rows):
         res["remarque"] = f"{total - len(rows)} mnémonique(s) non affiché(s) (max_resultats={max_resultats})."
@@ -923,3 +940,24 @@ def generate_source(projet, chemin, flags=0, nettoyer=True, max_caracteres=15000
         "tronque": len(text or "") > max_caracteres,
         "contenu": (text or "")[:max_caracteres],
     }
+
+
+# --------------------------------------------------------------------------
+# Traçage d'une boucle : diagrammes + mnémoniques + câblage des E/S
+# --------------------------------------------------------------------------
+
+def trace_loop(projet, repere, prefixe=None):
+    proj = find_project(projet)
+    prefix = prefixe or analyse.loop_prefix(repere)
+    charts, syms = [], []
+    for prog in _cpu_programs(proj):
+        cont = _container(prog, "Charts")
+        if cont is not None:
+            charts += _container_rows(proj, prog, cont)
+        syms += _symbol_rows(proj, prog)
+    stations = []
+    for st in _stations(proj):
+        text, _path = _station_cfg(proj, st)
+        stations.append({"station": _try_get(st, "Name"),
+                         "modules": hw_config.summarize(hw_config.parse_cfg(text))})
+    return analyse.trace_loop(repere, charts, syms, stations, prefixe=prefix)

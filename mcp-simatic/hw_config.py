@@ -110,7 +110,13 @@ def parse_cfg(text):
         elif mode and mode.endswith("ADDRESSES") and line.startswith("ADDRESS"):
             nums = [int(n) for n in _NUMBERS.findall(line)]
             sens = "E" if "IN_" in mode else ("S" if "OUT_" in mode else mode)
-            current["adresses"].append({"sens": sens, "debut": nums[0] if nums else None, "brut": nums})
+            entry = {"sens": sens, "debut": nums[0] if nums else None}
+            if len(nums) > 2 and nums[2] > 0:
+                # Format constaté : début, 0, longueur en octets, 0, 1, 0
+                entry["longueur"] = nums[2]
+                entry["plage"] = f"{nums[0]}..{nums[0] + nums[2] - 1}"
+            entry["brut"] = nums
+            current["adresses"].append(entry)
         else:
             m = _ATTR.match(line)
             if m:

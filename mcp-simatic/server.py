@@ -21,7 +21,7 @@ except Exception:
 
 import simatic_com as s7  # noqa: E402
 
-SERVER_INFO = {"name": "simatic-step7", "version": "0.2.0"}
+SERVER_INFO = {"name": "simatic-step7", "version": "0.3.0"}
 SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
 _PROJET = {
@@ -146,6 +146,57 @@ TOOLS = [
             "required": ["texte"],
         },
         "handler": s7.search,
+    },
+    {
+        "name": "lister_elements",
+        "description": "Liste les éléments d'un conteneur des programmes S7 de la CPU : "
+                       "'Charts' (diagrammes CFC/SFC = boucles, avec commentaire), 'Blocks' "
+                       "(FB/FC/DB/OB avec nom symbolique, famille, langage) ou 'Sources'. "
+                       "Filtre texte optionnel sur le nom, le nom symbolique, le commentaire...",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projet": _PROJET,
+                "conteneur": {"type": "string", "description": "'Charts', 'Blocks' ou 'Sources' (défaut 'Charts')."},
+                "programme": {"type": "string", "description": "LogPath du programme (défaut : programmes S7 de la CPU)."},
+                "filtre": {"type": "string", "description": "Texte recherché (insensible à la casse)."},
+                "max_resultats": {"type": "integer", "description": "Défaut 500."},
+            },
+            "required": ["projet"],
+        },
+        "handler": s7.list_items,
+    },
+    {
+        "name": "mnemoniques",
+        "description": "Table des mnémoniques du programme CPU (symbole, adresse, type, "
+                       "commentaire), avec filtre texte. Permet de relier une adresse E/S "
+                       "(ex. 'PEW 1024') à son repère et inversement.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projet": _PROJET,
+                "programme": {"type": "string", "description": "LogPath du programme (défaut : programmes S7 de la CPU)."},
+                "filtre": {"type": "string", "description": "Texte recherché dans le symbole, l'adresse ou le commentaire."},
+                "max_resultats": {"type": "integer", "description": "Défaut 500."},
+            },
+            "required": ["projet"],
+        },
+        "handler": s7.symbols,
+    },
+    {
+        "name": "structure_dossier_projet",
+        "description": "Structure du dossier d'un projet sur le disque (sous-dossiers, nombre "
+                       "et taille des fichiers par extension). Lecture du système de fichiers "
+                       "uniquement : sert à comprendre comment les données (CFC...) sont stockées.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projet": _PROJET,
+                "profondeur": {"type": "integer", "description": "Profondeur des dossiers listés (défaut 2)."},
+            },
+            "required": ["projet"],
+        },
+        "handler": s7.project_files,
     },
     {
         "name": "decrire_interface_com",

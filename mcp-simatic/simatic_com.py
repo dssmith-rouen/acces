@@ -50,6 +50,9 @@ _INVKIND = {1: "methode", 2: "get", 4: "put", 8: "putref"}
 _PARAMFLAG_FOPT = 0x10
 _PARAMFLAG_FHASDEFAULT = 0x20
 
+# Propriétés liées à l'interface graphique, sans intérêt.
+_UI_PROPS = {"appwindowhandle"}
+
 # Dossiers d'exemples / bibliothèques Siemens masqués par défaut.
 _EXCLUDED_MARKERS = ("\\examples\\", "\\s7libs\\")
 
@@ -286,6 +289,8 @@ def read_properties(obj):
             continue
         if m["name"].lower() in ONLINE_PROPS:
             props[m["name"]] = "<non lu : accès en ligne>"
+            continue
+        if m["name"].lower() in _UI_PROPS:
             continue
         try:
             value = obj._oleobj_.Invoke(m["memid"], 0, pythoncom.DISPATCH_PROPERTYGET, True)
@@ -652,3 +657,128 @@ def describe_typelib(progid, filtre=None):
                 entry["membres"] = sigs
         out["types"].append(entry)
     return out
+
+
+# --------------------------------------------------------------------------
+# Libellés des types (valeurs lues dans la bibliothèque de types SimaticLib)
+# --------------------------------------------------------------------------
+
+CONCRETE_TYPES = {
+    1138945: "FB", 1138946: "FC", 1138947: "DB", 1138948: "OB", 1138949: "SDB",
+    1138955: "SDBs", 1138950: "UDT", 1138951: "SFC", 1138952: "SFB", 1138953: "VAT",
+    17829890: "Diagramme CFC", 17829891: "Diagramme SFC",
+    1122309: "Source AWL", 1122310: "Source SCL", 1122311: "Source GRAPH",
+    1122312: "Source SCL (make)", 1122313: "Source GG", 1122314: "Source ZG", 1122315: "Source NET",
+}
+PROGRAM_TYPE_S7 = 1327361
+
+
+def _cpu_programs(proj, programme=None):
+    progs = get_member(proj, "Programs")
+    if programme:
+        return [find_item(progs, programme)]
+    return [p for p in enum_items(progs) if _try_get(p, "Type") == PROGRAM_TYPE_S7]
+
+
+def _container(prog, name):
+    for cont in enum_items(get_member(prog, "Next")):
+        if (_try_get(cont, "Name") or "").lower() == name.lower():
+            return cont
+    return None
+
+
+_LIST_PROPS = ("Name", "SymbolicName", "Comment", "Family", "Language", "Size", "Modified", "Creator")
+
+
+def list_items(projet, conteneur="Charts", programme=None, filtre=None, max_resultats=500):
+    proj = find_project(projet)
+    needle = (filtre or "").lower()
+    rows, total = [], 0
+    for prog in _cpu_programs(proj, programme):
+        cont = _container(prog, conteneur)
+        if cont is None:
+            continue
+        for item in enum_items(get_member(cont, "Next")):
+            available = members(item)
+            values = {p: _try_get(item, p) for p in _LIST_PROPS if p.lower() in available}
+            values = {k: v for k, v in values.items() if v not in (None, "")}
+            if needle and not any(isinstance(v, str) and needle in v.lower() for v in values.values()):
+                continue
+            total += 1
+            if len(rows) < max_resultats:
+                ctype = _try_get(item, "ConcreteType")
+                if ctype in CONCRETE_TYPES:
+                    values["genre"] = CONCRETE_TYPES[ctype]
+                values["programme"] = _try_get(prog, "LogPath")
+                rows.append(values)
+    res = {"conteneur": conteneur, "nb": total, "elements": rows}
+    if total > len(rows):
+        res["remarque"] = f"{total - len(rows)} élément(s) non affiché(s) (max_resultats={max_resultats})."
+    return res
+
+
+# --------------------------------------------------------------------------
+# Table des mnémoniques (export .sdf)
+# --------------------------------------------------------------------------
+
+import formats_s7  # noqa: E402
+
+_sym_cache = {}
+
+
+def symbols(projet, programme=None, filtre=None, max_resultats=500):
+    proj = find_project(projet)
+    needle = (filtre or "").lower()
+    rows, total = [], 0
+    for prog in _cpu_programs(proj, programme):
+        table = get_member(prog, "SymbolTable")
+        key = (_try_get(prog, "LogPath"), _norm(_try_get(proj, "LogPath")), _try_get(table, "Modified"))
+        if key not in _sym_cache:
+            m = members(table).get("export")
+            folder = tempfile.mkdtemp(prefix="mcp_simatic_sym_")
+            path = os.path.join(folder, "mnemoniques.sdf")
+            try:
+                table._oleobj_.Invoke(m["memid"], 0, pythoncom.DISPATCH_METHOD, True, path)
+            except Exception as exc:
+                raise SimaticError(f"Échec de l'export des mnémoniques : {com_message(exc)}")
+            _sym_cache[key] = formats_s7.parse_sdf(_read_text(path))
+        for row in _sym_cache[key]:
+            if needle and needle not in " ".join(row.values()).lower():
+                continue
+            total += 1
+            if len(rows) < max_resultats:
+                rows.append({**row, "programme": key[0]})
+    res = {"nb": total, "mnemoniques": rows}
+    if total > len(rows):
+        res["remarque"] = f"{total - len(rows)} mnémonique(s) non affiché(s) (max_resultats={max_resultats})."
+    return res
+
+
+# --------------------------------------------------------------------------
+# Structure du dossier d'un projet (lecture du système de fichiers uniquement)
+# --------------------------------------------------------------------------
+
+def project_files(projet, profondeur=2):
+    root = _try_get(find_project(projet), "LogPath")
+    by_ext, dirs = {}, []
+    for current, subdirs, files in os.walk(root):
+        rel = os.path.relpath(current, root)
+        depth = 0 if rel == "." else rel.count(os.sep) + 1
+        size = 0
+        for f in files:
+            try:
+                fsize = os.path.getsize(os.path.join(current, f))
+            except OSError:
+                continue
+            size += fsize
+            ext = os.path.splitext(f)[1].lower() or "(sans)"
+            n, total = by_ext.get(ext, (0, 0))
+            by_ext[ext] = (n + 1, total + fsize)
+        if depth <= profondeur:
+            dirs.append({"dossier": rel, "fichiers": len(files), "ko": round(size / 1024)})
+    exts = sorted(by_ext.items(), key=lambda kv: -kv[1][1])
+    return {
+        "racine": root,
+        "dossiers": dirs,
+        "extensions": [{"ext": e, "nb": n, "ko": round(t / 1024)} for e, (n, t) in exts[:40]],
+    }

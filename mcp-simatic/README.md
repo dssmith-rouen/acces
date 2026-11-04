@@ -3,7 +3,7 @@
 Serveur MCP qui permet à Claude de lire les projets STEP 7 V5 via l'interface COM
 officielle de SIMATIC Manager (`Simatic.Simatic`).
 
-**Version 0.2 : lecture seule, hors ligne.** Le serveur lit uniquement les fichiers
+**Version 0.3 : lecture seule, hors ligne.** Le serveur lit uniquement les fichiers
 projet. Il ne communique pas avec les automates et ne modifie rien : pas de
 compilation, pas de chargement, pas d'import. Seule la méthode `Export` est
 autorisée, et elle écrit un fichier texte en dehors du projet. Les propriétés COM
@@ -44,11 +44,10 @@ cd "C:\Claude cloud test\acces\mcp-simatic"
 py -3.12-32 test_local.py --projet "C:\Program Files (x86)\SIEMENS\STEP7\S7Proj\Pr948v09\Uc1"
 ```
 
-Le script écrit deux fichiers dans ce dossier :
-- `rapport_test.txt` : état, structure du programme CPU (conteneurs, premiers
-  éléments), configuration matérielle, recherche, adresses réseau ;
-- `rapport_interfaces_com.txt` : description des API COM disponibles (STEP 7, CFC,
-  SFC, HW Config, NetPro, assistant d'import/export…).
+Le script écrit `rapport_test.txt` dans ce dossier : structure du programme CPU,
+liste des diagrammes, blocs, mnémoniques, extrait matériel, structure du dossier projet.
+Avec `--complet`, il ajoute la configuration matérielle complète, les adresses réseau du
+multiprojet et `rapport_interfaces_com.txt` (API COM disponibles).
 
 ## Ajout dans Claude Desktop
 
@@ -67,6 +66,9 @@ Le chemin de `python.exe` est celui affiché par `py -0p` pour la version `3.12-
 | `exporter` | Appelle `Export` sur un objet (source, mnémoniques, station...) et renvoie le texte |
 | `config_materielle` | Modules par emplacement : référence, firmware, adresses E/S, paramètres réseau (via export `.cfg`) |
 | `adresses_reseau` | Tableau IP / masque / passerelle / MAC / nom d'appareil, PROFIBUS, MPI, PROFINET |
+| `lister_elements` | Diagrammes CFC/SFC (boucles), blocs ou sources d'un programme, avec commentaire et filtre |
+| `mnemoniques` | Table des mnémoniques (symbole, adresse, type, commentaire) avec filtre |
+| `structure_dossier_projet` | Dossiers et types de fichiers du projet sur le disque |
 | `rechercher` | Recherche un texte dans les noms, noms symboliques et commentaires des blocs, sources et diagrammes |
 | `decrire_interface_com` | Décrit l'API d'un composant COM (ProgID) sans créer d'objet |
 
@@ -79,8 +81,10 @@ en double. La navigation est une liste d'étapes, par exemple :
 - [x] Modèle COM validé : projets, stations, programmes (désignés par LogPath).
 - [x] Configuration matérielle : export `.cfg` des stations et analyse des modules.
 - [x] Adressage réseau : IP, masque, passerelle, MAC, PROFIBUS, MPI.
-- [ ] Recherche transverse : à valider sur les vrais conteneurs (blocs, diagrammes CFC).
-- [ ] Interprétation fine des lignes `ADDRESS` (début/longueur des E/S).
+- [x] Recherche transverse dans les diagrammes et les blocs (noms, symboles, commentaires).
+- [x] Plages d'adresses E/S des modules (début et longueur en octets).
+- [ ] Adresses IP des périphériques PROFINET IO (ET 200S…).
 - [ ] Boucles CFC/SFC : lire le contenu des diagrammes (blocs, paramètres, connexions).
-      Le COM `Simatic.Simatic` ne le permet pas. Une autre voie est à trouver
-      (interface CFC, export XML, objets de process...).
+      Le COM `Simatic.Simatic` ne le permet pas, et les composants CFC/SFC
+      (`CfcEditor`, `Sfc.Document`...) n'exposent pas d'API d'automatisation documentée.
+      Une autre voie est à trouver (stockage des données, exports manuels...).

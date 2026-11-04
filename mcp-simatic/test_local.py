@@ -103,6 +103,14 @@ def scan_com_registry():
     return found
 
 
+def _extrait_hw(result):
+    err, data = result
+    if err or not data:
+        return data
+    mods = [m for m in data[0]["modules"] if m.get("adresses_es")][:15]
+    return {"station": data[0]["station"], "nb_modules": len(data[0]["modules"]), "exemples_modules_es": mods}
+
+
 PROGIDS_A_DECRIRE = (
     "Simatic.Simatic", "CfcEditor", "CFC-Plan", "Sfc.Document", "SfcEditor", "CSfcServer",
     "S7jieaEx.Document", "S7JWZAPX.PCS7Wizard", "IS7hwcnfxAutomation", "S7hwcnfx.Document",
@@ -116,6 +124,8 @@ def main():
     parser.add_argument("--filtre-multiprojet", default="\\Pr948v09\\",
                         help="Filtre des projets pour adresses_reseau.")
     parser.add_argument("--recherche", default="PID", help="Texte pour l'outil rechercher.")
+    parser.add_argument("--complet", action="store_true",
+                        help="Ajoute la config matérielle complète, le réseau du multiprojet et les API COM.")
     parser.add_argument("--sortie", default=os.path.join(HERE, "rapport_test.txt"))
     parser.add_argument("--sortie-com", default=os.path.join(HERE, "rapport_interfaces_com.txt"))
     args = parser.parse_args()
@@ -173,14 +183,31 @@ def main():
                                     client.tool("explorer", projet=p,
                                                 chemin=base + ["Next", cname, "Next", first])[1])
 
-            # --- Matériel et réseau ---
-            err, hw = client.tool("config_materielle", projet=p)
-            section("config_materielle", hw)
-            section(f"recherche '{args.recherche}' dans le projet",
-                    client.tool("rechercher", texte=args.recherche, projet=p, max_resultats=40)[1])
+            if args.complet:
+                err, hw = client.tool("config_materielle", projet=p)
+                section("config_materielle", hw)
 
-        section(f"adresses_reseau (filtre {args.filtre_multiprojet})",
-                client.tool("adresses_reseau", filtre=args.filtre_multiprojet)[1])
+            # --- Boucles, blocs, mnémoniques ---
+            section("lister_elements Charts (tous les diagrammes)",
+                    client.tool("lister_elements", projet=p, conteneur="Charts", max_resultats=1000)[1])
+            section(f"lister_elements Blocks filtre '{args.recherche}'",
+                    client.tool("lister_elements", projet=p, conteneur="Blocks",
+                                filtre=args.recherche, max_resultats=50)[1])
+            err, sym = client.tool("mnemoniques", projet=p, max_resultats=60)
+            section("mnemoniques (60 premiers)", sym)
+            section(f"mnemoniques filtre '{args.recherche}'",
+                    client.tool("mnemoniques", projet=p, filtre=args.recherche, max_resultats=60)[1])
+            section("config_materielle station 1 (modules avec plages E/S, extrait)",
+                    _extrait_hw(client.tool("config_materielle", projet=p)))
+            section("structure_dossier_projet",
+                    client.tool("structure_dossier_projet", projet=p, profondeur=2)[1])
+
+        if args.complet:
+            section(f"adresses_reseau (filtre {args.filtre_multiprojet})",
+                    client.tool("adresses_reseau", filtre=args.filtre_multiprojet)[1])
+
+        if not args.complet:
+            return
 
         # --- API COM disponibles (fichier séparé, volumineux) ---
         with open(args.sortie_com, "w", encoding="utf-8") as fcom:
@@ -193,7 +220,9 @@ def main():
         client.close()
         section("stderr du serveur (fin)", "\n".join(client.stderr[-40:]))
         out.close()
-    print(f"\nRapports écrits dans :\n  {args.sortie}\n  {args.sortie_com}")
+        print(f"\nRapport écrit dans : {args.sortie}")
+        if args.complet:
+            print(f"Interfaces COM : {args.sortie_com}")
 
 
 if __name__ == "__main__":

@@ -123,54 +123,55 @@ def experience_cfc(args):
         out.flush()
         print(f"- {title}")
 
+    def step(title, tool, **arguments):
+        print(f"  ... en cours : {title}", flush=True)
+        try:
+            err, data = client.tool(tool, **arguments)
+        except queue.Empty:
+            section(title, f"DÉLAI DÉPASSÉ ({TIMEOUT} s) : le serveur ne répond plus, test arrêté.")
+            raise
+        section(title, data)
+        return err, data
+
     env = dict(os.environ, SIMATIC_PROJETS_ECRITURE=args.projet_copie)
     client = Client(env=env)
-    p, chart = args.projet_copie, args.diagramme
+    p = args.projet_copie
     try:
         client.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                       "clientInfo": {"name": "test_local", "version": "0"}})
         client.notify("notifications/initialized")
-        for module in ("S7GenerateSourceFlags", "S7XRefXportColumns", "S7ObjectBaseType"):
-            section(f"constantes {module}",
-                    client.tool("decrire_interface_com", progid="Simatic.Simatic", filtre=module)[1])
 
-        # Statistiques des blocs (langage, famille, auteur) pour repérer le code généré par le CFC
+        print("  ... en cours : liste des blocs", flush=True)
         err, blocks = client.tool("lister_elements", projet=p, conteneur="Blocks", max_resultats=10000)
-        if err:
-            section("lister_elements Blocks", blocks)
-            blocks = {"elements": []}
-        els = blocks["elements"]
-        stats = {}
-        for key in ("genre", "Language", "Family", "Creator"):
-            stats[key] = collections.Counter(str(e.get(key)) for e in els).most_common(30)
-        section(f"statistiques des {len(els)} blocs", stats)
-        examples = {}
-        for lang, _ in stats["Language"]:
-            examples[lang] = [{k: e.get(k) for k in ("Name", "SymbolicName", "Comment", "Family", "Creator", "Size")}
-                              for e in els if str(e.get("Language")) == lang][:6]
-        section("exemples de blocs par langage", examples)
-        related = [e for e in els if any(chart.lower() in str(e.get(k, "")).lower()
-                                         for k in ("Name", "SymbolicName", "Comment"))]
-        section(f"blocs dont le nom/symbole/commentaire contient '{chart}'", related[:30])
-
-        # Structure d'appel (lecture seule)
-        err, struct = client.tool("structure_programme", projet=p, max_caracteres=60000)
-        section("structure_programme (60000 premiers caractères)", struct)
-        if not err and isinstance(struct, dict):
-            lines = [l for l in struct.get("contenu", "").splitlines() if chart.lower() in l.lower()]
-            section(f"lignes de la structure contenant '{chart}'", "\n".join(lines[:80]))
-
-        # Génération de sources sur la COPIE
+        els = [] if err else blocks["elements"]
         prog = els[0]["programme"] if els else None
-        candidates = [e["Name"] for e in related[:3]]
-        candidates += [e["Name"] for e in els if e.get("SymbolicName") == "VP_PID"][:1]
-        for name in candidates:
-            chemin = ["Programs", prog, "Next", "Blocks", "Next", name]
-            section(f"generer_source {name}", client.tool("generer_source", projet=p, chemin=chemin,
-                                                          max_caracteres=40000)[1])
+        keys = ("Name", "SymbolicName", "Comment", "Family", "Language", "Creator", "Size")
 
-        section("structure du dossier projet (dossiers >= 1 Mo)",
-                client.tool("structure_dossier_projet", projet=p, profondeur=6, min_ko=1000)[1])
+        def short(e):
+            return {k: e.get(k) for k in keys if e.get(k) not in (None, "")}
+
+        # Catalogue des FB (types de blocs utilisés dans les diagrammes : régulateurs, moteurs...)
+        section("catalogue des FB", [short(e) for e in els if e.get("genre") == "FB"])
+        es_map_fc = [e for e in els if e.get("genre") == "FC" and e.get("Creator") == "ES_MAP"]
+        section(f"FC générés (Creator ES_MAP) : {len(es_map_fc)}, 40 premiers", [short(e) for e in es_map_fc[:40]])
+        es_map_db = [e for e in els if e.get("genre") == "DB" and e.get("Creator") == "ES_MAP"]
+        section(f"DB générés (Creator ES_MAP) : {len(es_map_db)}, familles",
+                collections.Counter(str(e.get("Family")) for e in es_map_db).most_common(40))
+
+        # Génération de sources sur la COPIE, du plus sûr au moins connu
+        targets = [e["Name"] for e in els if e.get("SymbolicName") == "VP_PID"][:1]
+        small_fc = sorted((e for e in es_map_fc if e.get("Size")), key=lambda e: e["Size"])
+        targets += [e["Name"] for e in small_fc[:1]] + [e["Name"] for e in small_fc[len(small_fc) // 2:][:1]]
+        targets += [e["Name"] for e in es_map_db if e.get("Family") == "VP_CTRL"][:1]
+        for name in targets:
+            step(f"generer_source {name}", "generer_source", projet=p, max_caracteres=40000,
+                 chemin=["Programs", prog, "Next", "Blocks", "Next", name])
+
+        if args.avec_structure:
+            step("structure_programme (symboles, commentaires, langage)", "structure_programme",
+                 projet=p, colonnes=7, max_caracteres=60000)
+    except queue.Empty:
+        pass
     except Exception as exc:
         section("ERREUR DU TEST", f"{type(exc).__name__} : {exc}")
     finally:
@@ -201,6 +202,8 @@ def main():
     parser.add_argument("--projet-copie",
                         default=r"C:\Program Files (x86)\SIEMENS\STEP7\s7proj\Pr948v_1\Uc1")
     parser.add_argument("--diagramme", default="71_0011_HIC")
+    parser.add_argument("--avec-structure", action="store_true",
+                        help="Ajoute l'export de la structure d'appel (long sur un gros programme).")
     parser.add_argument("--sortie", default=os.path.join(HERE, "rapport_test.txt"))
     parser.add_argument("--sortie-com", default=os.path.join(HERE, "rapport_interfaces_com.txt"))
     args = parser.parse_args()

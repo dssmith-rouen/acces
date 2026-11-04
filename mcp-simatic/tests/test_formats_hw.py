@@ -187,6 +187,14 @@ class TestAnalyse(unittest.TestCase):
         self.assertEqual(types, ["Adresse PROFIBUS en double", "IP en double", "Passerelle hors du sous-réseau"])
         self.assertEqual(analyse.network_checks(rows[2:3]), [])
 
+    def test_copies_de_multiprojet_non_comparees(self):
+        base = {"type": "Ethernet", "ip": "10.0.0.1", "masque": "255.255.255.0", "station": "A"}
+        rows = [dict(base, projet="AS1", chemin_projet=r"C:\S7Proj\MULTI\AS1"),
+                dict(base, projet="AS1", chemin_projet=r"C:\S7Proj\MULTI_COPIE\AS1")]
+        self.assertEqual(analyse.network_checks(rows), [])
+        rows[1]["chemin_projet"] = r"C:\S7Proj\multi\AS2"
+        self.assertEqual([a["type"] for a in analyse.network_checks(rows)], ["IP en double"])
+
     def test_tracer_boucle_inconnue(self):
         res = analyse.trace_loop("99_9999_XX", self.charts, self.symbols, self.stations)
         self.assertIn("remarque", res)

@@ -141,7 +141,7 @@ mais échoue pour les blocs compilés en SCL, dont les FC générés par le CFC.
 ## Développement
 
 ```powershell
-python -m unittest discover -s tests      # 53 tests, sans Windows ni STEP 7
+python -m unittest discover -s tests      # 55 tests, sans Windows ni STEP 7
 ```
 
 | Fichier | Contenu |

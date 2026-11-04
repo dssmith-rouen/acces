@@ -439,7 +439,8 @@ def explore(projet=None, chemin=None, max_elements=200, avec_signatures=True):
 # --------------------------------------------------------------------------
 
 def _read_text(path):
-    raw = open(path, "rb").read()
+    with open(path, "rb") as f:
+        raw = f.read()
     for enc in ("utf-8-sig", "cp1252"):
         try:
             return raw.decode(enc)
@@ -448,8 +449,30 @@ def _read_text(path):
     return raw.decode("latin-1")
 
 
+def _output_folder(dossier_sortie, proj, prefix):
+    """Dossier de sortie : temporaire par défaut ; jamais à l'intérieur du projet STEP 7."""
+    if not dossier_sortie:
+        return tempfile.mkdtemp(prefix=prefix)
+    if proj is not None:
+        root = _norm(_try_get(proj, "LogPath"))
+        if root and (_norm(dossier_sortie) + "\\").startswith(root + "\\"):
+            raise SimaticError("Le dossier de sortie ne doit pas être dans le dossier du projet STEP 7.")
+    os.makedirs(dossier_sortie, exist_ok=True)
+    return dossier_sortie
+
+
+def _unique_path(folder, filename):
+    base, ext = os.path.splitext(os.path.basename(filename) or "export")
+    path, n = os.path.join(folder, base + ext), 1
+    while os.path.exists(path):
+        n += 1
+        path = os.path.join(folder, f"{base}_{n}{ext}")
+    return path
+
+
 def export(projet, chemin, dossier_sortie=None, nom_fichier=None, max_caracteres=150000):
-    obj = navigate(_root(projet), chemin)
+    root = _root(projet)
+    obj = navigate(root, chemin)
     m = members(obj).get("export")
     if m is None or "methode" not in m["kinds"]:
         raise SimaticError(
@@ -461,9 +484,8 @@ def export(projet, chemin, dossier_sortie=None, nom_fichier=None, max_caracteres
         iface = (interface_name(obj) or "").lower()
         ext = ".sdf" if "symbol" in iface else ".txt"
         nom_fichier = "".join(c if c.isalnum() or c in "-_." else "_" for c in name) + ext
-    folder = dossier_sortie or tempfile.mkdtemp(prefix="mcp_simatic_")
-    os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, nom_fichier)
+    folder = _output_folder(dossier_sortie, root if projet else None, "mcp_simatic_")
+    path = _unique_path(folder, nom_fichier.replace("/", "\\").split("\\")[-1])
     try:
         obj._oleobj_.Invoke(m["memid"], 0, pythoncom.DISPATCH_METHOD, True, path)
     except Exception as exc:
@@ -472,7 +494,8 @@ def export(projet, chemin, dossier_sortie=None, nom_fichier=None, max_caracteres
             + ", ".join(s for s in signatures(obj) if " Export(" in s)
         )
     if not os.path.exists(path):
-        candidates = [f for f in os.listdir(folder) if f.lower().startswith(os.path.splitext(nom_fichier)[0].lower())]
+        stem = os.path.splitext(os.path.basename(path))[0].lower()
+        candidates = [f for f in os.listdir(folder) if f.lower().startswith(stem)]
         if not candidates:
             raise SimaticError(f"Export terminé mais aucun fichier trouvé dans {folder}.")
         path = os.path.join(folder, candidates[0])
@@ -504,10 +527,9 @@ def _station_cfg(proj, station, dossier_sortie=None):
     m = members(station).get("export")
     if m is None:
         raise SimaticError(f"La station {key[1]} ne propose pas d'export.")
-    folder = dossier_sortie or tempfile.mkdtemp(prefix="mcp_simatic_hw_")
-    os.makedirs(folder, exist_ok=True)
+    folder = _output_folder(dossier_sortie, proj, "mcp_simatic_hw_")
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in f"{os.path.basename(key[0])}_{key[1]}")
-    path = os.path.join(folder, safe + ".cfg")
+    path = _unique_path(folder, safe + ".cfg")
     try:
         station._oleobj_.Invoke(m["memid"], 0, pythoncom.DISPATCH_METHOD, True, path)
     except Exception as exc:
@@ -570,7 +592,8 @@ def network(projet=None, filtre=None, type_interface=None, controles=True):
                 errors.append(f"{pname}/{sname} : {exc}")
                 continue
             for row in hw_config.network_view(parsed):
-                rows.append({"projet": pname, "station": sname, **row})
+                rows.append({"projet": pname, "station": sname, **row,
+                             "chemin_projet": _try_get(proj, "LogPath")})
     res = {}
     if controles:
         res["alertes"] = analyse.network_checks(rows)

@@ -5,6 +5,7 @@ Les données d'entrée sont celles produites par simatic_com (listes de diagramm
 mnémoniques, modules issus de hw_config.summarize).
 """
 
+import ntpath
 import re
 
 import formats_s7
@@ -176,14 +177,23 @@ def _ip_int(ip):
     return (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]
 
 
+def _group(row):
+    """Dossier du multiprojet : deux copies d'un même multiprojet ne sont pas comparées."""
+    path = row.get("chemin_projet")
+    return ntpath.dirname(ntpath.normpath(path)).lower() if path else None
+
+
 def network_checks(rows):
-    """Alertes sur une liste d'interfaces (sortie de simatic_com.network)."""
+    """Alertes sur une liste d'interfaces (sortie de simatic_com.network).
+
+    Les IP ne sont comparées qu'entre projets d'un même dossier de multiprojet.
+    """
     alerts = []
     by_ip = {}
     for r in rows:
         if r.get("ip"):
-            by_ip.setdefault(r["ip"], []).append(r)
-    for ip, users in sorted(by_ip.items()):
+            by_ip.setdefault((_group(r), r["ip"]), []).append(r)
+    for (_grp, ip), users in sorted(by_ip.items(), key=lambda kv: (str(kv[0][0]), kv[0][1])):
         if len(users) > 1:
             where = ", ".join(f"{u.get('projet')}/{u.get('station')} ({u.get('module')})" for u in users)
             alerts.append({"type": "IP en double", "ip": ip, "interfaces": where})

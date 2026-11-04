@@ -254,6 +254,17 @@ class TestExports(SimaticTestCase):
         with self.assertRaises(s7.SimaticError):
             s7.export(PROJ_PATH, ["Programs", "2"])  # pas de méthode Export
 
+    def test_exporter_nom_et_dossier_securises(self):
+        out = tempfile.mkdtemp()
+        res = s7.export(PROJ_PATH, ["Programs", "2", "SymbolTable"], dossier_sortie=out,
+                        nom_fichier="..\\..\\evasion.sdf")
+        self.assertEqual(os.path.dirname(res["fichier"]), out)
+        res2 = s7.export(PROJ_PATH, ["Programs", "2", "SymbolTable"], dossier_sortie=out,
+                         nom_fichier="evasion.sdf")
+        self.assertNotEqual(res["fichier"], res2["fichier"], "pas d'écrasement")
+        with self.assertRaises(s7.SimaticError):
+            s7.export(PROJ_PATH, ["Programs", "2", "SymbolTable"], dossier_sortie=PROJ_PATH + "\\sous")
+
     def test_structure_programme(self):
         res = s7.program_structure(PROJ_PATH, colonnes=7)
         self.assertIn("FB860, DB201", res["contenu"])

@@ -35,7 +35,8 @@ _CHEMIN = {
     "description": "Étapes de navigation depuis le projet : nom d'une propriété "
                    "(ex. 'Programs', 'Stations', 'Next') ou nom, numéro (à partir de 1) ou "
                    "chemin LogPath (contient '\\\\', utile si les noms sont en double) d'un "
-                   "élément de collection. Ex. ['Programs', '<programme>', 'Next', "
+                   "élément de collection, ou propriété à un paramètre écrite 'Collection(5)'. "
+                   "Ex. ['Programs', '<programme>', 'Next', "
                    "'<conteneur>', 'Next', 'FB1'].",
 }
 

@@ -150,22 +150,41 @@ def experience_cfc(args):
         def short(e):
             return {k: e.get(k) for k in keys if e.get(k) not in (None, "")}
 
-        # Catalogue des FB (types de blocs utilisés dans les diagrammes : régulateurs, moteurs...)
-        section("catalogue des FB", [short(e) for e in els if e.get("genre") == "FB"])
         es_map_fc = [e for e in els if e.get("genre") == "FC" and e.get("Creator") == "ES_MAP"]
-        section(f"FC générés (Creator ES_MAP) : {len(es_map_fc)}, 40 premiers", [short(e) for e in es_map_fc[:40]])
         es_map_db = [e for e in els if e.get("genre") == "DB" and e.get("Creator") == "ES_MAP"]
-        section(f"DB générés (Creator ES_MAP) : {len(es_map_db)}, familles",
-                collections.Counter(str(e.get("Family")) for e in es_map_db).most_common(40))
 
-        # Génération de sources sur la COPIE, du plus sûr au moins connu
-        targets = [e["Name"] for e in els if e.get("SymbolicName") == "VP_PID"][:1]
+        # 1) Sous-collections d'un diagramme : Collection(ID) / Child(ID) (lecture seule)
+        consts = {}
+        for module in ("S7CollectionID", "S7ProjectCategoryFlag"):
+            err, data = client.tool("decrire_interface_com", progid="Simatic.Simatic", filtre=module)
+            section(f"constantes {module}", data)
+            if not err and data.get("types"):
+                consts[module] = data["types"][0].get("valeurs", {})
+        chart_path = ["Programs", prog, "Next", "Charts", "Next", args.diagramme]
+        for cname, cid in consts.get("S7CollectionID", {}).items():
+            if "online" in cname.lower() or "memcard" in cname.lower():
+                section(f"{cname} ignoré", "accès en ligne / carte mémoire : non testé (serveur hors ligne)")
+                continue
+            for prop in ("Collection", "Child"):
+                print(f"  ... en cours : {prop}({cid}) [{cname}]", flush=True)
+                err, data = client.tool("explorer", projet=p, chemin=chart_path + [f"{prop}({cid})"],
+                                        max_elements=30)
+                section(f"diagramme {args.diagramme} -> {prop}({cid}) [{cname}]", data)
+
+        # 2) Où sont stockées les données volumineuses du projet
+        step("structure du dossier projet (dossiers >= 1 Mo)", "structure_dossier_projet",
+             projet=p, profondeur=8, min_ko=1000)
+
+        # 3) Interfaces de blocs SCL (en-têtes seulement) et paramètres d'instances
+        fb860 = [e["Name"] for e in els if e.get("SymbolicName") == "VP_PID"][:1]
         small_fc = sorted((e for e in es_map_fc if e.get("Size")), key=lambda e: e["Size"])
-        targets += [e["Name"] for e in small_fc[:1]] + [e["Name"] for e in small_fc[len(small_fc) // 2:][:1]]
-        targets += [e["Name"] for e in es_map_db if e.get("Family") == "VP_CTRL"][:1]
-        for name in targets:
-            step(f"generer_source {name}", "generer_source", projet=p, max_caracteres=40000,
-                 chemin=["Programs", prog, "Next", "Blocks", "Next", name])
+        for name, flags in [(n, 256) for n in fb860] + [(n, 32) for n in fb860] + \
+                [(e["Name"], 256) for e in small_fc[:1]]:
+            step(f"generer_source {name} flags={flags}", "generer_source", projet=p, flags=flags,
+                 max_caracteres=40000, chemin=["Programs", prog, "Next", "Blocks", "Next", name])
+        for e in [e for e in es_map_db if e.get("Family") == "VP_CTRL"][1:7]:
+            step(f"generer_source {e['Name']} (DB d'instance)", "generer_source", projet=p,
+                 max_caracteres=20000, chemin=["Programs", prog, "Next", "Blocks", "Next", e["Name"]])
 
         if args.avec_structure:
             step("structure_programme (symboles, commentaires, langage)", "structure_programme",

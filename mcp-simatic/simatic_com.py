@@ -13,6 +13,7 @@ Points importants :
 
 import datetime
 import os
+import re
 import struct
 import tempfile
 
@@ -369,10 +370,34 @@ def find_item(coll, key):
     raise SimaticError(f"Élément '{key}' introuvable dans {interface_name(coll) or 'la collection'}.")
 
 
+_CALL_STEP = re.compile(r"^(\w+)\((.*)\)$")
+
+
+def _parse_arg(text):
+    text = text.strip()
+    if re.fullmatch(r"-?\d+", text):
+        return int(text)
+    return text.strip("\"'")
+
+
+def get_member_arg(obj, name, arg):
+    """Propriété en lecture à UN paramètre (ex. Collection(5), Child(2), Item(3))."""
+    if name.lower() in ONLINE_PROPS:
+        raise SimaticError(f"'{name}' nécessite un accès en ligne : refusé.")
+    m = members(obj).get(name.lower())
+    get = (m or {}).get("kinds", {}).get("get")
+    if not get or get["required"] != 1:
+        raise SimaticError(f"'{name}(...)' n'est pas une propriété en lecture à un paramètre : refusé.")
+    return _wrap(obj._oleobj_.Invoke(m["memid"], 0, pythoncom.DISPATCH_PROPERTYGET, True, arg))
+
+
 def navigate(obj, chemin):
     for step in chemin or []:
         step = str(step)
-        if step.lower() in members(obj):
+        call = _CALL_STEP.match(step)
+        if call and call.group(1).lower() in members(obj):
+            obj = get_member_arg(obj, call.group(1), _parse_arg(call.group(2)))
+        elif step.lower() in members(obj):
             obj = get_member(obj, step)
         else:
             obj = find_item(obj, step)

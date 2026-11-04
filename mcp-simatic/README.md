@@ -1,105 +1,165 @@
 # MCP SIMATIC Manager (STEP 7 V5.x / PCS 7)
 
-Serveur MCP qui permet à Claude de lire les projets STEP 7 V5 via l'interface COM
-officielle de SIMATIC Manager (`Simatic.Simatic`).
+Serveur MCP qui permet à Claude (Claude Desktop) de lire les projets STEP 7 V5 et
+PCS 7 via l'interface COM officielle de SIMATIC Manager (`Simatic.Simatic`) :
+projets, diagrammes CFC/SFC, blocs, mnémoniques, configuration matérielle,
+adressage réseau et câblage des boucles.
 
-**Version 0.4 : lecture seule, hors ligne** (sauf l'outil expérimental `generer_source`, voir plus bas). Le serveur lit uniquement les fichiers
-projet. Il ne communique pas avec les automates et ne modifie rien : pas de
-compilation, pas de chargement, pas d'import. Seule la méthode `Export` est
-autorisée, et elle écrit un fichier texte en dehors du projet. Les propriétés COM
-qui interrogent l'automate en ligne (`ModuleState`, `HSystemState`, `OnlineBlocks`…)
-sont bloquées.
+## Sécurité : lecture seule, hors ligne
+
+- Le serveur lit les **fichiers projet** uniquement. Il ne communique jamais avec un
+  automate : les propriétés COM qui interrogent la CPU en ligne (`ModuleState`,
+  `HSystemState`, `OnlineBlocks`…) sont bloquées.
+- Aucune méthode de modification n'est appelée (pas de compilation, chargement,
+  import, suppression). Les exports (`Export`, `ExportProgramStructure`) écrivent des
+  fichiers texte **en dehors** du projet, dans le dossier temporaire.
+- Seule exception : l'outil expérimental `generer_source`, refusé par défaut (voir
+  plus bas).
 
 ## Prérequis
 
-- Windows + SIMATIC Manager (testé avec STEP 7 V5.6 SP2 HF8 / PCS 7 V9.1 SP1).
-- **Python 32 bits** obligatoire : `S7ABATCX.DLL` (le COM de STEP 7) est une DLL 32 bits.
-  Un Python 64 bits renvoie l'erreur `0x80040154 Classe non enregistrée`.
-- `pywin32` installé dans ce Python 32 bits. Aucune autre dépendance n'est nécessaire.
+- Windows avec SIMATIC Manager (développé sur STEP 7 V5.6 SP2 / PCS 7 V9.1 SP1).
+- **Python 32 bits** : le COM de STEP 7 (`S7ABATCX.DLL`) est une DLL 32 bits. Un
+  Python 64 bits renvoie `0x80040154 Classe non enregistrée`.
+- `pywin32` dans ce Python 32 bits. Aucune autre dépendance n'est nécessaire.
 
 ## Installation
 
-1. Télécharge **« Windows installer (32-bit) »** de Python 3.12.10 sur
-   <https://www.python.org/downloads/release/python-31210/>.
-   - Choisis « Install Now », pour l'utilisateur courant (pas besoin de droits administrateur).
-   - **Ne coche pas** « Add python.exe to PATH », pour ne pas masquer ton Python 64 bits.
-2. Vérifie l'installation :
+1. Python 3.12 **32 bits**, à côté du Python existant, pour l'utilisateur courant,
+   **sans** l'ajouter au PATH :
    ```powershell
-   py -0p
+   [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing "https://www.python.org/ftp/python/3.12.10/python-3.12.10.exe" -OutFile "$env:TEMP\python-3.12.10-32.exe"
+   Start-Process "$env:TEMP\python-3.12.10-32.exe" -ArgumentList "/passive InstallAllUsers=0 PrependPath=0 Include_launcher=0 Include_test=0" -Wait
+   py -0p          # une ligne -V:3.12-32 doit apparaître
    ```
-   Une ligne `-V:3.12-32` doit apparaître.
-3. Installe pywin32 :
+2. pywin32 :
    ```powershell
    py -3.12-32 -m pip install pywin32
    ```
-4. Récupère le code :
+3. Le code :
    ```powershell
    git clone -b claude/modest-edison-mao9an https://github.com/dssmith-rouen/acces.git "C:\Claude cloud test\acces"
    ```
 
-## Test sans Claude
+## Vérification sans Claude
 
 ```powershell
 cd "C:\Claude cloud test\acces\mcp-simatic"
-py -3.12-32 test_local.py --projet "C:\Program Files (x86)\SIEMENS\STEP7\S7Proj\MonMulti\AS1"
+py -3.12-32 test_local.py --projet "<chemin d'un projet>" --repere "<repère d'une boucle>"
 ```
 
-Le script écrit `rapport_test.txt` dans ce dossier : structure du programme CPU,
-liste des diagrammes, blocs, mnémoniques, extrait matériel, structure du dossier projet.
-Avec `--complet`, il ajoute la configuration matérielle complète, les adresses réseau du
-multiprojet et `rapport_interfaces_com.txt` (API COM disponibles).
+Le chemin d'un projet est sa colonne « LogPath », par exemple
+`C:\Program Files (x86)\SIEMENS\STEP7\S7Proj\MonMulti\AS1`. Le script écrit
+`rapport_test.txt` dans ce dossier. Avec `--complet`, il ajoute la configuration
+matérielle complète, les adresses réseau du multiprojet et
+`rapport_interfaces_com.txt`.
 
 ## Ajout dans Claude Desktop
 
-Ajoute le bloc `mcpServers` de `claude_desktop_config.exemple.json` dans
-`%APPDATA%\Claude\claude_desktop_config.json`. **Fusionne-le** avec le contenu
-existant au lieu d'écraser le fichier, puis redémarre complètement Claude Desktop.
-Le chemin de `python.exe` est celui affiché par `py -0p` pour la version `3.12-32`.
+```powershell
+py -3.12-32 installer_claude_desktop.py --afficher   # aperçu, n'écrit rien
+py -3.12-32 installer_claude_desktop.py              # installe (avec sauvegarde)
+```
 
-## Outils exposés
+Le script sauvegarde `claude_desktop_config.json` (fichier `.bak-date`), ajoute
+l'entrée `simatic` sans toucher au reste, puis demande de redémarrer Claude Desktop
+complètement (icône près de l'horloge, puis Quitter). Options :
+- `--journal` : journal des appels dans `journal_mcp.log`, utile au dépannage ;
+- `--desinstaller` : retire l'entrée.
+
+Installation manuelle : voir `claude_desktop_config.exemple.json`.
+
+## Utilisation dans Claude Desktop
+
+Exemples de demandes :
+- « Liste les projets STEP 7 du multiprojet MonMulti. »
+- « Trace la boucle 12_0345_FRC du projet AS1 : diagramme, mesures, vannes, câblage. »
+- « Fais le plan d'adressage IP de tous les automates et signale les incohérences. »
+- « Quelles cartes d'entrées analogiques y a-t-il sur la station AS1, et sur quels esclaves PROFIBUS ? »
+- « Quels diagrammes CFC parlent de la cuve T1 ? »
+- « À quoi correspond l'adresse PEW 514 ? »
+
+Le bouton « + » de Claude Desktop propose aussi trois **modèles de demande** :
+`analyser_boucle`, `inventaire_reseau` et `fiche_station`.
+
+## Outils
 
 | Outil | Rôle |
 |---|---|
 | `simatic_etat` | Python (32/64 bits), pywin32, connexion COM, nombre de projets |
 | `lister_projets` | Projets avec nom, type et chemin. Exemples et `S7libs` masqués par défaut |
-| `explorer` | Navigation générique dans le modèle COM : propriétés, membres, éléments d'une collection |
-| `exporter` | Appelle `Export` sur un objet (source, mnémoniques, station...) et renvoie le texte |
-| `config_materielle` | Modules par emplacement : référence, firmware, adresses E/S, paramètres réseau (via export `.cfg`) |
-| `adresses_reseau` | Tableau IP / masque / passerelle / MAC / nom d'appareil, PROFIBUS, MPI, PROFINET |
-| `lister_elements` | Diagrammes CFC/SFC (boucles), blocs ou sources d'un programme, avec commentaire et filtre |
+| `tracer_boucle` | Repère → diagrammes, mnémoniques et câblage de chaque E/S (station décentralisée, PROFIBUS, carte, voie) |
+| `lister_elements` | Diagrammes CFC/SFC, blocs ou sources d'un programme, filtre texte ou par genre (FB, DB…) |
 | `mnemoniques` | Table des mnémoniques (symbole, adresse, type, commentaire) avec filtre |
+| `rechercher` | Recherche dans les noms, symboles et commentaires de tous les programmes |
+| `config_materielle` | Modules par emplacement : référence, firmware, plages E/S, paramètres réseau (export `.cfg`) |
+| `adresses_reseau` | IP / masque / passerelle / MAC / nom d'appareil, PROFIBUS, MPI, PROFINET |
+| `structure_programme` | Structure d'appel du programme (OB → FC/FB → DB d'instance). Peut être long |
+| `explorer` | Navigation générique dans le modèle COM : propriétés, membres, éléments |
+| `exporter` | Appelle `Export` sur un objet (source, mnémoniques, station…) et renvoie le texte |
 | `structure_dossier_projet` | Dossiers et types de fichiers du projet sur le disque |
-| `structure_programme` | Structure d'appel du programme (OB → FC/FB → DB d'instance) |
-| `generer_source` | EXPÉRIMENTAL : source AWL d'un bloc, seulement sur les projets autorisés (voir ci-dessous) |
-| `rechercher` | Recherche un texte dans les noms, noms symboliques et commentaires des blocs, sources et diagrammes |
 | `decrire_interface_com` | Décrit l'API d'un composant COM (ProgID) sans créer d'objet |
+| `generer_source` | EXPÉRIMENTAL : source AWL d'un bloc, sur les projets autorisés uniquement |
 
-Un projet se désigne par son **chemin** (LogPath), car des noms comme `UC1` existent
-en double. La navigation est une liste d'étapes, par exemple :
-`["Programs", "<programme>", "Next", "<conteneur>", "Next", "FB1"]`.
+Les recherches acceptent `mot_entier` : « PID » trouve « SORTIE PID » mais pas
+« RAPIDE ».
 
-## Outil expérimental `generer_source`
+### Désignation des projets et navigation
+
+Un projet se désigne par son **chemin** (LogPath), car un même nom peut exister dans
+plusieurs copies d'un multiprojet. `explorer` prend une liste d'étapes : nom d'une
+propriété (`Programs`, `Stations`, `Next`), nom, numéro ou chemin d'un élément, ou
+propriété à un paramètre (`Collection(5)`). Exemple :
+`["Programs", "<LogPath du programme>", "Next", "Charts", "Next", "<diagramme>"]`.
+
+## Variables d'environnement
+
+| Variable | Effet |
+|---|---|
+| `SIMATIC_MCP_LOG` | Fichier où journaliser chaque appel (outil, durée, erreur) |
+| `SIMATIC_PROJETS_ECRITURE` | Projets (chemins séparés par `;`) où `generer_source` est autorisé |
+
+### Outil expérimental `generer_source`
 
 `GenerateSource` peut créer un objet source dans le projet. Le serveur le refuse
-sauf sur les projets listés dans la variable d'environnement
-`SIMATIC_PROJETS_ECRITURE` (chemins séparés par `;`), par exemple une **copie** du
-projet. Les sources créées sont supprimées ensuite (`nettoyer=true` par défaut).
+sauf sur les projets listés dans `SIMATIC_PROJETS_ECRITURE`, idéalement une **copie**.
+Les sources créées sont détectées et supprimées ensuite (`nettoyer=true`).
+Constaté : la génération fonctionne pour les DB (valeurs des paramètres d'instance)
+mais échoue pour les blocs compilés en SCL, dont les FC générés par le CFC.
 
-Expérience sur la copie (structure d'appel, blocs liés à un diagramme, sources) :
+## Dépannage
+
+| Symptôme | Cause probable |
+|---|---|
+| `0x80040154 Classe non enregistrée` | Serveur lancé avec un Python 64 bits |
+| `pywin32 n'est pas disponible` | `py -3.12-32 -m pip install pywin32` |
+| Un appel ne répond plus | Boîte de dialogue SIMATIC en attente (regarder la barre des tâches), ou export très long (`structure_programme`) |
+| Claude ne voit pas les outils | Redémarrer complètement Claude Desktop ; vérifier `claude_desktop_config.json` ; tester `test_local.py` |
+| Erreur après fermeture de SIMATIC Manager | Le serveur se reconnecte automatiquement une fois ; sinon relancer Claude Desktop |
+
+## Développement
 
 ```powershell
-py -3.12-32 test_local.py --experience-cfc --projet-copie "<chemin de la copie>" --diagramme <nom du diagramme>
+python -m unittest discover -s tests      # 32 tests, sans Windows ni STEP 7
 ```
 
-## Feuille de route
+| Fichier | Contenu |
+|---|---|
+| `server.py` | Protocole MCP (JSON-RPC sur stdio), outils, prompts |
+| `simatic_com.py` | Accès COM en lecture seule, caches, exports |
+| `hw_config.py` | Analyse des exports matériels `.cfg` |
+| `formats_s7.py` | Mnémoniques `.sdf`, adresses STEP 7 |
+| `analyse.py` | Recherche par mot, localisation d'E/S, synthèse de boucle |
+| `installer_claude_desktop.py` | Ajout / retrait dans Claude Desktop |
+| `test_local.py` | Scénarios de test sur le PC (rapport texte) |
+| `tests/` | Tests unitaires sur données fictives |
 
-- [x] Modèle COM validé : projets, stations, programmes (désignés par LogPath).
-- [x] Configuration matérielle : export `.cfg` des stations et analyse des modules.
-- [x] Adressage réseau : IP, masque, passerelle, MAC, PROFIBUS, MPI.
-- [x] Recherche transverse dans les diagrammes et les blocs (noms, symboles, commentaires).
-- [x] Plages d'adresses E/S des modules (début et longueur en octets).
+## Limites connues et feuille de route
+
+- [x] Projets, stations, programmes, diagrammes, blocs, mnémoniques.
+- [x] Configuration matérielle, plages E/S, adresses réseau.
+- [x] Traçage d'une boucle (repère → câblage).
 - [ ] Adresses IP des périphériques PROFINET IO (ET 200S…).
-- [ ] Boucles CFC/SFC : lire le contenu des diagrammes (blocs, paramètres, connexions).
-      Le COM `Simatic.Simatic` ne le permet pas, et les composants CFC/SFC
-      (`CfcEditor`, `Sfc.Document`...) n'exposent pas d'API d'automatisation documentée.
-      Une autre voie est à trouver (stockage des données, exports manuels...).
+- [ ] Contenu des diagrammes CFC (blocs, paramètres, connexions) : le COM STEP 7 ne
+      l'expose pas et les blocs SCL générés ne sont pas régénérables. Pistes en cours :
+      sous-collections `Collection(ID)` des diagrammes, DB d'instance.

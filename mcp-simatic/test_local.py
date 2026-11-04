@@ -214,6 +214,7 @@ def main():
     parser.add_argument("--filtre-multiprojet", default=None,
                         help="Filtre des projets pour adresses_reseau.")
     parser.add_argument("--recherche", default="PID", help="Texte pour les outils de recherche.")
+    parser.add_argument("--repere", help="Repère d'une boucle à tracer (outil tracer_boucle).")
     parser.add_argument("--complet", action="store_true",
                         help="Ajoute la config matérielle complète, le réseau du multiprojet et les API COM.")
     parser.add_argument("--experience-cfc", action="store_true",
@@ -291,15 +292,20 @@ def main():
                 section("config_materielle", hw)
 
             # --- Boucles, blocs, mnémoniques ---
-            section("lister_elements Charts (tous les diagrammes)",
-                    client.tool("lister_elements", projet=p, conteneur="Charts", max_resultats=1000)[1])
-            section(f"lister_elements Blocks filtre '{args.recherche}'",
-                    client.tool("lister_elements", projet=p, conteneur="Blocks",
+            err, charts = client.tool("lister_elements", projet=p, conteneur="Charts", max_resultats=1000)
+            section("lister_elements Charts (nombre et 10 premiers)",
+                    charts if err else {"nb": charts["nb"], "exemples": charts["elements"][:10]})
+            section(f"lister_elements Blocks filtre '{args.recherche}' (mot entier)",
+                    client.tool("lister_elements", projet=p, conteneur="Blocks", mot_entier=True,
                                 filtre=args.recherche, max_resultats=50)[1])
             err, sym = client.tool("mnemoniques", projet=p, max_resultats=60)
             section("mnemoniques (60 premiers)", sym)
-            section(f"mnemoniques filtre '{args.recherche}'",
-                    client.tool("mnemoniques", projet=p, filtre=args.recherche, max_resultats=60)[1])
+            section(f"mnemoniques filtre '{args.recherche}' (mot entier)",
+                    client.tool("mnemoniques", projet=p, filtre=args.recherche, mot_entier=True,
+                                max_resultats=60)[1])
+            if args.repere:
+                section(f"tracer_boucle {args.repere}",
+                        client.tool("tracer_boucle", projet=p, repere=args.repere)[1])
             section("config_materielle station 1 (modules avec plages E/S, extrait)",
                     _extrait_hw(client.tool("config_materielle", projet=p)))
             section("structure_dossier_projet",

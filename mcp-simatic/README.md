@@ -140,7 +140,7 @@ mais échoue pour les blocs compilés en SCL, dont les FC générés par le CFC.
 ## Développement
 
 ```powershell
-python -m unittest discover -s tests      # 32 tests, sans Windows ni STEP 7
+python -m unittest discover -s tests      # 49 tests, sans Windows ni STEP 7
 ```
 
 | Fichier | Contenu |
@@ -152,7 +152,7 @@ python -m unittest discover -s tests      # 32 tests, sans Windows ni STEP 7
 | `analyse.py` | Recherche par mot, localisation d'E/S, synthèse de boucle |
 | `installer_claude_desktop.py` | Ajout / retrait dans Claude Desktop |
 | `test_local.py` | Scénarios de test sur le PC (rapport texte) |
-| `tests/` | Tests unitaires sur données fictives |
+| `tests/` | Tests sur données fictives, dont un faux SIMATIC (`fake_com.py`) |
 
 ## Limites connues et feuille de route
 

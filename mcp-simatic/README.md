@@ -89,11 +89,12 @@ Le bouton « + » de Claude Desktop propose aussi trois **modèles de demande** 
 | `simatic_etat` | Python (32/64 bits), pywin32, connexion COM, nombre de projets |
 | `lister_projets` | Projets avec nom, type et chemin. Exemples et `S7libs` masqués par défaut |
 | `tracer_boucle` | Repère → diagrammes, mnémoniques et câblage de chaque E/S (station décentralisée, PROFIBUS, carte, voie) |
+| `localiser_adresse` | Adresse (`PEW 512`, `E 12.3`, `PIW 512`…) → mnémoniques, carte, voie, station décentralisée |
 | `lister_elements` | Diagrammes CFC/SFC, blocs ou sources d'un programme, filtre texte ou par genre (FB, DB…) |
 | `mnemoniques` | Table des mnémoniques (symbole, adresse, type, commentaire) avec filtre |
 | `rechercher` | Recherche dans les noms, symboles et commentaires de tous les programmes |
 | `config_materielle` | Modules par emplacement : référence, firmware, plages E/S, paramètres réseau (export `.cfg`) |
-| `adresses_reseau` | IP / masque / passerelle / MAC / nom d'appareil, PROFIBUS, MPI, PROFINET |
+| `adresses_reseau` | IP / masque / passerelle / MAC / nom d'appareil, PROFIBUS, MPI, PROFINET, avec alertes (IP en double, passerelle hors sous-réseau, PROFIBUS en double) |
 | `structure_programme` | Structure d'appel du programme (OB → FC/FB → DB d'instance). Peut être long |
 | `explorer` | Navigation générique dans le modèle COM : propriétés, membres, éléments |
 | `exporter` | Appelle `Export` sur un objet (source, mnémoniques, station…) et renvoie le texte |
@@ -140,7 +141,7 @@ mais échoue pour les blocs compilés en SCL, dont les FC générés par le CFC.
 ## Développement
 
 ```powershell
-python -m unittest discover -s tests      # 49 tests, sans Windows ni STEP 7
+python -m unittest discover -s tests      # 53 tests, sans Windows ni STEP 7
 ```
 
 | Fichier | Contenu |

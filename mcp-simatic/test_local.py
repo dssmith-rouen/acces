@@ -215,6 +215,7 @@ def main():
                         help="Filtre des projets pour adresses_reseau.")
     parser.add_argument("--recherche", default="PID", help="Texte pour les outils de recherche.")
     parser.add_argument("--repere", help="Repère d'une boucle à tracer (outil tracer_boucle).")
+    parser.add_argument("--adresse", help="Adresse à localiser, ex. 'PEW 512' (outil localiser_adresse).")
     parser.add_argument("--complet", action="store_true",
                         help="Ajoute la config matérielle complète, le réseau du multiprojet et les API COM.")
     parser.add_argument("--experience-cfc", action="store_true",
@@ -303,6 +304,9 @@ def main():
             section(f"mnemoniques filtre '{args.recherche}' (mot entier)",
                     client.tool("mnemoniques", projet=p, filtre=args.recherche, mot_entier=True,
                                 max_resultats=60)[1])
+            if args.adresse:
+                section(f"localiser_adresse {args.adresse}",
+                        client.tool("localiser_adresse", projet=p, adresse=args.adresse)[1])
             if args.repere:
                 section(f"tracer_boucle {args.repere}",
                         client.tool("tracer_boucle", projet=p, repere=args.repere)[1])
@@ -314,6 +318,9 @@ def main():
         if args.complet:
             section(f"adresses_reseau (filtre {args.filtre_multiprojet})",
                     client.tool("adresses_reseau", filtre=args.filtre_multiprojet)[1])
+        else:
+            err, net = client.tool("adresses_reseau", filtre=args.filtre_multiprojet, type_interface="Ethernet")
+            section("adresses_reseau Ethernet + alertes", net)
 
         if not args.complet:
             return

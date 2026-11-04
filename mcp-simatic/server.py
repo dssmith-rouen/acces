@@ -23,7 +23,7 @@ except Exception:
 
 import simatic_com as s7  # noqa: E402
 
-SERVER_INFO = {"name": "simatic-step7", "version": "0.5.0"}
+SERVER_INFO = {"name": "simatic-step7", "version": "0.6.0"}
 SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
 _PROJET = {
@@ -129,6 +129,8 @@ TOOLS = [
             "properties": {
                 "projet": _PROJET,
                 "filtre": {"type": "string", "description": "Texte dans le nom/chemin des projets à inclure (ex. '\\\\MonMulti\\\\')."},
+                "type_interface": {"type": "string", "description": "Ne garder qu'un type : 'Ethernet', 'PROFIBUS', 'MPI', 'PROFINET'."},
+                "controles": {"type": "boolean", "description": "Contrôles de cohérence : IP en double, passerelle hors sous-réseau, PROFIBUS en double (défaut : oui)."},
             },
         },
         "handler": s7.network,
@@ -167,6 +169,21 @@ TOOLS = [
             "required": ["projet", "repere"],
         },
         "handler": s7.trace_loop,
+    },
+    {
+        "name": "localiser_adresse",
+        "description": "À quoi correspond une adresse d'E/S ou de mémento (ex. 'PEW 512', 'E 12.3', "
+                       "'AW 20', 'PIW 512') : mnémoniques qui l'utilisent et, pour une E/S, la carte, "
+                       "la voie et la station décentralisée.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "projet": _PROJET,
+                "adresse": {"type": "string", "description": "Adresse absolue STEP 7 (allemand ou anglais)."},
+            },
+            "required": ["projet", "adresse"],
+        },
+        "handler": s7.locate_address,
     },
     {
         "name": "lister_elements",
@@ -367,7 +384,8 @@ PROMPTS = [
         "template": (
             "Analyse la boucle {repere}{projet_txt} avec les outils SIMATIC. "
             "1) Si le projet n'est pas précisé, trouve-le avec lister_projets puis rechercher. "
-            "2) Utilise tracer_boucle pour obtenir le diagramme, les mnémoniques et le câblage. "
+            "2) Utilise tracer_boucle pour obtenir le diagramme, les mnémoniques et le câblage ; "
+            "localiser_adresse sert pour une adresse isolée. "
             "3) Explique en français le rôle probable de la boucle (mesure, régulation, actionneur), "
             "en distinguant ce qui est lu dans le projet de ce que tu déduis des noms. "
             "4) Présente un tableau du câblage (signal, adresse, station décentralisée, carte, voie). "
@@ -384,8 +402,9 @@ PROMPTS = [
             "Dresse le plan d'adressage réseau avec l'outil adresses_reseau{filtre_txt}. "
             "Présente un tableau des interfaces Ethernet (projet, station, module, IP, masque, "
             "passerelle, nom d'appareil), puis un résumé PROFIBUS par station (maîtres, nombre "
-            "d'esclaves, plages d'adresses). Signale les doublons d'IP, les sous-réseaux différents "
-            "et les passerelles incohérentes."
+            "d'esclaves, plages d'adresses). Reprends les alertes calculées par l'outil (IP en "
+            "double, passerelle hors sous-réseau, PROFIBUS en double) et signale aussi les "
+            "sous-réseaux différents entre automates censés communiquer."
         ),
     },
     {
@@ -437,7 +456,8 @@ def handle(msg):
             "serverInfo": SERVER_INFO,
             "instructions": "Accès en lecture seule, hors ligne, aux projets STEP 7 V5 / PCS 7 "
                             "(SIMATIC Manager). Désigner les projets par leur chemin (lister_projets). "
-                            "Pour une boucle : tracer_boucle ; pour le réseau : adresses_reseau ; "
+                            "Pour une boucle : tracer_boucle ; pour une adresse : localiser_adresse ; "
+                            "pour le réseau : adresses_reseau ; "
                             "pour le matériel : config_materielle ; sinon rechercher / explorer.",
         })
     if method == "ping":

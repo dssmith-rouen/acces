@@ -36,7 +36,7 @@ class TestProtocole(unittest.TestCase):
         names = {t["name"] for t in tools}
         for expected in ("simatic_etat", "lister_projets", "explorer", "exporter", "config_materielle",
                          "adresses_reseau", "rechercher", "tracer_boucle", "lister_elements",
-                         "mnemoniques", "structure_programme", "generer_source"):
+                         "mnemoniques", "structure_programme", "generer_source", "localiser_adresse"):
             self.assertIn(expected, names)
         for t in tools:
             props = t["inputSchema"].get("properties", {})

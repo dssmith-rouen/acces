@@ -558,7 +558,7 @@ def _projects_for(projet=None, filtre=None):
     return out
 
 
-def network(projet=None, filtre=None):
+def network(projet=None, filtre=None, type_interface=None, controles=True):
     rows, errors = [], []
     for proj in _projects_for(projet, filtre):
         pname = _try_get(proj, "Name")
@@ -571,7 +571,12 @@ def network(projet=None, filtre=None):
                 continue
             for row in hw_config.network_view(parsed):
                 rows.append({"projet": pname, "station": sname, **row})
-    res = {"interfaces": rows, "nb": len(rows)}
+    res = {}
+    if controles:
+        res["alertes"] = analyse.network_checks(rows)
+    if type_interface:
+        rows = [r for r in rows if r["type"].lower().startswith(type_interface.lower())]
+    res.update(interfaces=rows, nb=len(rows))
     if errors:
         res["erreurs"] = errors
     return res
@@ -946,18 +951,46 @@ def generate_source(projet, chemin, flags=0, nettoyer=True, max_caracteres=15000
 # Traçage d'une boucle : diagrammes + mnémoniques + câblage des E/S
 # --------------------------------------------------------------------------
 
+def _hardware_stations(proj):
+    """Modules résumés de chaque station ; une station qui ne s'exporte pas est signalée."""
+    stations, errors = [], []
+    for st in _stations(proj):
+        name = _try_get(st, "Name")
+        try:
+            text, _path = _station_cfg(proj, st)
+        except SimaticError as exc:
+            errors.append(f"{name} : {exc}")
+            continue
+        stations.append({"station": name, "modules": hw_config.summarize(hw_config.parse_cfg(text))})
+    return stations, errors
+
+
+def _cpu_symbols(proj):
+    syms = []
+    for prog in _cpu_programs(proj):
+        syms += _symbol_rows(proj, prog)
+    return syms
+
+
 def trace_loop(projet, repere, prefixe=None):
     proj = find_project(projet)
     prefix = prefixe or analyse.loop_prefix(repere)
-    charts, syms = [], []
+    charts = []
     for prog in _cpu_programs(proj):
         cont = _container(prog, "Charts")
         if cont is not None:
             charts += _container_rows(proj, prog, cont)
-        syms += _symbol_rows(proj, prog)
-    stations = []
-    for st in _stations(proj):
-        text, _path = _station_cfg(proj, st)
-        stations.append({"station": _try_get(st, "Name"),
-                         "modules": hw_config.summarize(hw_config.parse_cfg(text))})
-    return analyse.trace_loop(repere, charts, syms, stations, prefixe=prefix)
+    stations, errors = _hardware_stations(proj)
+    res = analyse.trace_loop(repere, charts, _cpu_symbols(proj), stations, prefixe=prefix)
+    if errors:
+        res["stations_non_lues"] = errors
+    return res
+
+
+def locate_address(projet, adresse):
+    proj = find_project(projet)
+    stations, errors = _hardware_stations(proj)
+    res = analyse.find_address(adresse, _cpu_symbols(proj), stations)
+    if errors:
+        res["stations_non_lues"] = errors
+    return res

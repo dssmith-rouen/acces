@@ -156,6 +156,37 @@ class TestAnalyse(unittest.TestCase):
         self.assertEqual((oev["module"], oev["voie"]), ("B.04.05", 8))
         self.assertNotIn("cablage", res["mnemoniques"][4])
 
+    def test_localiser_adresse(self):
+        res = analyse.find_address("PEW 514", self.symbols, self.stations)
+        self.assertEqual([m["symbole"] for m in res["mnemoniques"]], ["12_0345_FT"])
+        self.assertEqual((res["cablage"]["module"], res["cablage"]["voie"]), ("A.03.04", 1))
+        res = analyse.find_address("E 12.3", self.symbols, self.stations)
+        self.assertEqual([m["symbole"] for m in res["mnemoniques"]], ["12_0345_FCO"])
+        self.assertEqual(analyse.find_address("E 12.4", self.symbols, self.stations)["mnemoniques"], [])
+        res = analyse.find_address("EB 12", self.symbols, self.stations)  # l'octet contient E 12.3
+        self.assertEqual([m["symbole"] for m in res["mnemoniques"]], ["12_0345_FCO"])
+        res = analyse.find_address("MW 100", self.symbols, self.stations)
+        self.assertEqual((res["zone"], [m["symbole"] for m in res["mnemoniques"]]), ("mémento", ["12_0345_CALC"]))
+        self.assertNotIn("cablage", res)
+        self.assertIn("absente", analyse.find_address("PEW 900", self.symbols, self.stations)["cablage"])
+        self.assertIn("erreur", analyse.find_address("DB 10", self.symbols, self.stations))
+
+    def test_controles_reseau(self):
+        rows = [
+            {"projet": "P", "station": "A", "type": "Ethernet", "ip": "10.0.0.1", "masque": "255.255.255.0",
+             "passerelle": "10.0.1.254", "module": "CP1"},
+            {"projet": "P", "station": "B", "type": "Ethernet", "ip": "10.0.0.1", "masque": "255.255.255.0",
+             "module": "CP2"},
+            {"projet": "P", "station": "C", "type": "Ethernet", "ip": "10.0.0.3", "masque": "255.255.255.0",
+             "passerelle": "10.0.0.254", "module": "CP3"},
+            {"projet": "P", "station": "A", "type": "PROFIBUS (esclave)", "adresse": 3, "reseau_dp": 1},
+            {"projet": "P", "station": "A", "type": "PROFIBUS (esclave)", "adresse": 3, "reseau_dp": 1},
+            {"projet": "P", "station": "A", "type": "PROFIBUS (esclave)", "adresse": 3, "reseau_dp": 2},
+        ]
+        types = sorted(a["type"] for a in analyse.network_checks(rows))
+        self.assertEqual(types, ["Adresse PROFIBUS en double", "IP en double", "Passerelle hors du sous-réseau"])
+        self.assertEqual(analyse.network_checks(rows[2:3]), [])
+
     def test_tracer_boucle_inconnue(self):
         res = analyse.trace_loop("99_9999_XX", self.charts, self.symbols, self.stations)
         self.assertIn("remarque", res)

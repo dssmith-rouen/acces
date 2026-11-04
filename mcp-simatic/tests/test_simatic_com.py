@@ -226,6 +226,17 @@ class TestMaterielEtBoucle(SimaticTestCase):
         self.assertEqual(net["nb"], 6)
         self.assertTrue(all(r["projet"] == "AS1" for r in net["interfaces"]))
 
+    def test_reseau_filtre_et_controles(self):
+        net = s7.network(projet=PROJ_PATH, type_interface="ethernet")
+        self.assertEqual([r["ip"] for r in net["interfaces"]], ["10.0.0.10"])
+        self.assertEqual(net["alertes"], [])
+        self.assertNotIn("alertes", s7.network(projet=PROJ_PATH, controles=False))
+
+    def test_localiser_adresse(self):
+        res = s7.locate_address(PROJ_PATH, "PAW 646")
+        self.assertEqual([m["symbole"] for m in res["mnemoniques"]], ["12_0345_FV"])
+        self.assertEqual(res["cablage"]["station_decentralisee"], "ET200M-ZONE-B")
+
     def test_tracer_boucle(self):
         res = s7.trace_loop(PROJ_PATH, "12_0345_FRC")
         self.assertEqual([d["Name"] for d in res["diagrammes"]], ["12_0345_FRC"])

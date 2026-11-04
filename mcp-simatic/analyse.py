@@ -127,3 +127,79 @@ def trace_loop(repere, charts, symbols, stations, prefixe=None):
         res["remarque"] = (f"Aucun diagramme ni mnémonique ne commence par '{prefix}'. "
                            "Essaie un autre préfixe (paramètre 'prefixe').")
     return res
+
+
+# --------------------------------------------------------------------------
+# Adresse -> mnémoniques et câblage
+# --------------------------------------------------------------------------
+
+def _span(address):
+    """Octets couverts par une adresse (un bit couvre son octet)."""
+    return set(range(address["octet"], address["octet"] + max(address["taille"], 1)))
+
+
+def overlaps(a, b):
+    if a["sens"] != b["sens"] or not (_span(a) & _span(b)):
+        return False
+    if a["bit"] is not None and b["bit"] is not None:
+        return a["octet"] == b["octet"] and a["bit"] == b["bit"]
+    return True
+
+
+def find_address(text, symbols, stations):
+    address = formats_s7.parse_address(text)
+    if address is None:
+        return {"adresse": text, "erreur": "Adresse non reconnue (ex. 'PEW 512', 'E 12.3', 'AW 20', 'PIW 512')."}
+    matches = []
+    for sym in symbols:
+        other = formats_s7.parse_address(sym.get("adresse", ""))
+        if other and overlaps(address, other):
+            matches.append({k: sym.get(k) for k in ("symbole", "adresse", "type", "commentaire") if sym.get(k)})
+    res = {"adresse": text, "zone": {"E": "entrée", "S": "sortie", "M": "mémento"}[address["sens"]],
+           "mnemoniques": matches}
+    if address["sens"] in ("E", "S"):
+        res["cablage"] = locate_io(stations, address) or "adresse absente de la configuration matérielle"
+    return res
+
+
+# --------------------------------------------------------------------------
+# Contrôles de cohérence du plan d'adressage
+# --------------------------------------------------------------------------
+
+def _ip_int(ip):
+    try:
+        parts = [int(x) for x in ip.split(".")]
+    except (AttributeError, ValueError):
+        return None
+    if len(parts) != 4 or any(not 0 <= p <= 255 for p in parts):
+        return None
+    return (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]
+
+
+def network_checks(rows):
+    """Alertes sur une liste d'interfaces (sortie de simatic_com.network)."""
+    alerts = []
+    by_ip = {}
+    for r in rows:
+        if r.get("ip"):
+            by_ip.setdefault(r["ip"], []).append(r)
+    for ip, users in sorted(by_ip.items()):
+        if len(users) > 1:
+            where = ", ".join(f"{u.get('projet')}/{u.get('station')} ({u.get('module')})" for u in users)
+            alerts.append({"type": "IP en double", "ip": ip, "interfaces": where})
+    for r in rows:
+        ip, mask, gw = _ip_int(r.get("ip")), _ip_int(r.get("masque")), _ip_int(r.get("passerelle"))
+        if ip is not None and mask is not None and gw is not None and (ip & mask) != (gw & mask):
+            alerts.append({"type": "Passerelle hors du sous-réseau", "ip": r["ip"], "masque": r["masque"],
+                           "passerelle": r["passerelle"], "interface": f"{r.get('projet')}/{r.get('station')}"})
+    seen = {}
+    for r in rows:
+        if r.get("type") in ("PROFIBUS (esclave)", "PROFIBUS (maître)") and r.get("adresse") not in (None, ""):
+            subnet = r.get("sous_reseau") or r.get("reseau_dp")
+            key = (r.get("projet"), r.get("station"), str(subnet), str(r["adresse"]))
+            seen.setdefault(key, []).append(r)
+    for (proj, station, subnet, addr), users in sorted(seen.items()):
+        if len(users) > 1 and subnet != "None":
+            alerts.append({"type": "Adresse PROFIBUS en double", "station": f"{proj}/{station}",
+                           "reseau": subnet, "adresse": addr, "nb": len(users)})
+    return alerts
